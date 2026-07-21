@@ -23,17 +23,32 @@ def generate(
     ] = None,
     grid_size: Annotated[
         int,
-        typer.Option("--grid-size", "-n", help="Grid resolution (N×N points)."),
+        typer.Option(
+            "--grid-size",
+            "-n",
+            help="Square grid shortcut (sets both X and Y point counts).",
+        ),
     ] = 100,
+    grid_size_x: Annotated[
+        Optional[int],
+        typer.Option("--grid-x", help="Point count along X (overrides --grid-size for X)."),
+    ] = None,
+    grid_size_y: Annotated[
+        Optional[int],
+        typer.Option("--grid-y", help="Point count along Y (overrides --grid-size for Y)."),
+    ] = None,
     side_length: Annotated[
         float,
         typer.Option("--side", help="Square side length."),
     ] = 100.0,
     amp_sw: Annotated[float, typer.Option("--amp-sw", help="SW corner amplitude.")] = 1.0,
-    amp_se: Annotated[float, typer.Option("--amp-se", help="SE corner amplitude.")] = 1.0,
-    amp_ne: Annotated[float, typer.Option("--amp-ne", help="NE corner amplitude.")] = 0.6,
-    amp_nw: Annotated[float, typer.Option("--amp-nw", help="NW corner amplitude.")] = 0.8,
-    wavelength: Annotated[float, typer.Option("--wavelength", "-l", help="Wave length λ.")] = 25.0,
+    amp_se: Annotated[float, typer.Option("--amp-se", help="SE corner amplitude.")] = 0.85,
+    amp_ne: Annotated[float, typer.Option("--amp-ne", help="NE corner amplitude.")] = 0.55,
+    amp_nw: Annotated[float, typer.Option("--amp-nw", help="NW corner amplitude.")] = 0.9,
+    wavelength: Annotated[
+        float,
+        typer.Option("--wavelength", "-l", help="Wave length λ for all corner sources."),
+    ] = 25.0,
     frequency: Annotated[float, typer.Option("--frequency", "-f", help="Wave frequency.")] = 1.0,
     time: Annotated[float, typer.Option("--time", "-t", help="Simulation time.")] = 0.0,
     decay: Annotated[float, typer.Option("--decay", help="Distance amplitude decay.")] = 0.0,
@@ -82,14 +97,21 @@ def generate(
         if not quiet:
             typer.echo(f"Loaded config from {config}")
     else:
+        nx = grid_size if grid_size_x is None else grid_size_x
+        ny = grid_size if grid_size_y is None else grid_size_y
         pipeline_config = PipelineConfig(
-            grid_size=grid_size,
+            grid_size_x=nx,
+            grid_size_y=ny,
             side_length=side_length,
             amplitude_sw=amp_sw,
             amplitude_se=amp_se,
             amplitude_ne=amp_ne,
             amplitude_nw=amp_nw,
             wavelength=wavelength,
+            wavelength_sw=wavelength,
+            wavelength_se=wavelength,
+            wavelength_ne=wavelength,
+            wavelength_nw=wavelength,
             frequency=frequency,
             time=time,
             decay=decay,

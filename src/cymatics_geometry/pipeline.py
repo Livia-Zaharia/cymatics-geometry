@@ -15,9 +15,19 @@ import numpy as np
 import pyvista as pv
 
 from cymatics_geometry.config import PipelineConfig
-from cymatics_geometry.grid import CORNER_LABELS, build_square_grid, corner_positions
+from cymatics_geometry.grid import (
+    SOURCE_LABELS,
+    build_square_grid,
+    grid_shape,
+    source_positions,
+)
 from cymatics_geometry.lines import build_line_geometry, polyline_length
-from cymatics_geometry.waves import displace_points, interference_field
+from cymatics_geometry.waves import (
+    distances_to_sources,
+    displace_points,
+    interference_field,
+    release_xy_offsets,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,14 +41,18 @@ class PipelineResult:
     grid_points: np.ndarray
     xs: np.ndarray
     ys: np.ndarray
-    # Stage 2 — corner wave sources
-    corners: np.ndarray
-    corner_labels: tuple[str, str, str, str] = CORNER_LABELS
+    # Stage 2 — wave sources (corners + mid-edges)
+    sources: np.ndarray
+    source_labels: tuple[str, ...] = SOURCE_LABELS
+    # Backward-compatible aliases (corners = first four sources)
+    corners: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    corner_labels: tuple[str, ...] = ("SW", "SE", "NE", "NW")
     # Stage 3 — interference field
     displacement: np.ndarray = field(default_factory=lambda: np.zeros(0))
-    contributions: np.ndarray = field(default_factory=lambda: np.zeros((0, 4)))
-    # Stage 4 — displaced points
+    contributions: np.ndarray = field(default_factory=lambda: np.zeros((0, 8)))
+    # Stage 4 — displaced points (Z + optional border XY release)
     displaced_points: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    xy_offsets: np.ndarray = field(default_factory=lambda: np.zeros((0, 2)))
     # Stage 5 — reconnected line
     polyline: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
     line_mesh: pv.PolyData = field(default_factory=pv.PolyData)
@@ -54,21 +68,22 @@ def run_pipeline(
 
     Stages
     ------
-    1. Deploy points on a square N×N grid
-    2. Place wave-producing outputs at the four corners
-    3. Compute wave interference from corner amplitudes
-    4. Displace points in Z according to the field
+    1. Deploy points on an nx×ny grid
+    2. Place wave sources at corners (+ optional mid-edges)
+    3. Compute wave interference from active source amplitudes
+    4. Displace points in Z; release unlocks XY as a connected surface
     5. Reconnect displaced points into a continuous line
     """
+    nx, ny = grid_shape(config)
     if verbose:
-        print(f"Grid: {config.grid_size}×{config.grid_size}, side={config.side_length}")
+        print(f"Grid: {nx}×{ny} (X×Y), side={config.side_length}")
+        print(f"Active sources: {config.active_source_labels()}")
         print(
-            "Corner amplitudes SW/SE/NE/NW: "
-            f"{config.amplitude_sw:.3f} / {config.amplitude_se:.3f} / "
-            f"{config.amplitude_ne:.3f} / {config.amplitude_nw:.3f}"
+            "Amplitudes SW/SE/NE/NW/S/E/N/W: "
+            + " / ".join(f"{a:.3f}" for a in config.amplitudes)
         )
         print(
-            f"wavelength={config.wavelength:.3f}, frequency={config.frequency:.3f}, "
+            f"frequency={config.frequency:.3f}, "
             f"time={config.time:.3f}, decay={config.decay:.3f}"
         )
         print(f"line_pattern={config.line_pattern}")
@@ -79,11 +94,13 @@ def run_pipeline(
         print(f"Stage 1 — flat grid: {len(grid_points)} points")
 
     # Stage 2
-    corners = corner_positions(config.side_length)
+    sources = source_positions(config.side_length)
+    corners = sources[:4]
     if verbose:
-        print(f"Stage 2 — corner sources: {list(CORNER_LABELS)}")
+        print(f"Stage 2 — sources: {list(SOURCE_LABELS)}")
 
     # Stage 3
+    distances = distances_to_sources(grid_points, config.side_length)
     displacement, contributions = interference_field(grid_points, config)
     if verbose:
         print(
@@ -91,15 +108,26 @@ def run_pipeline(
             f"z∈[{float(displacement.min()):.4f}, {float(displacement.max()):.4f}]"
         )
 
-    # Stage 4
-    displaced = displace_points(grid_points, displacement)
+    # Stage 4 — Z waves + radial XY release mobility
+    xy_offsets = release_xy_offsets(
+        grid_points,
+        config,
+        distances=distances,
+        contributions=contributions,
+    )
+    displaced = displace_points(grid_points, displacement, xy_offsets=xy_offsets)
+    n_released = int(np.count_nonzero(np.linalg.norm(xy_offsets, axis=1) > 1e-9))
     if verbose:
-        print(f"Stage 4 — displaced points: {len(displaced)}")
+        print(
+            f"Stage 4 — displaced points: {len(displaced)} "
+            f"(xy released: {n_released})"
+        )
 
     # Stage 5
     polyline, line_mesh = build_line_geometry(
         displaced,
-        config.grid_size,
+        nx,
+        ny,
         pattern=config.line_pattern,
     )
     length = polyline_length(polyline)
@@ -111,17 +139,28 @@ def run_pipeline(
 
     stats = {
         "point_count": int(len(grid_points)),
-        "grid_size": int(config.grid_size),
+        "grid_size": int(nx),  # legacy
+        "grid_size_x": int(nx),
+        "grid_size_y": int(ny),
         "displacement_min": float(displacement.min()),
         "displacement_max": float(displacement.max()),
         "displacement_mean": float(displacement.mean()),
         "displacement_std": float(displacement.std()),
+        "border_released": n_released,  # legacy key
+        "xy_released": n_released,
+        "xy_offset_max": float(np.linalg.norm(xy_offsets, axis=1).max())
+        if len(xy_offsets)
+        else 0.0,
         "polyline_vertices": int(len(polyline)),
         "polyline_length": length,
         "amplitudes": list(config.amplitudes),
+        "active": list(config.active_flags),
+        "active_labels": config.active_source_labels(),
         "wavelength": float(config.wavelength),
         "frequency": float(config.frequency),
         "time": float(config.time),
+        "boundary_tension": float(config.boundary_tension),
+        "release_pace": float(config.release_pace),
         "line_pattern": config.line_pattern,
     }
 
@@ -130,10 +169,13 @@ def run_pipeline(
         grid_points=grid_points,
         xs=xs,
         ys=ys,
+        sources=sources,
+        source_labels=SOURCE_LABELS,
         corners=corners,
         displacement=displacement,
         contributions=contributions,
         displaced_points=displaced,
+        xy_offsets=xy_offsets,
         polyline=polyline,
         line_mesh=line_mesh,
         stats=stats,

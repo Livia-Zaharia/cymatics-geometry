@@ -12,17 +12,19 @@ Author: **Livia Zaharia**
 
 Instead of lofting stacked circles into a cylindrical shell, this library:
 
-1. Deploys points on a **square grid** (default **100×100**)
-2. Puts **wave-producing outputs at the four corners** (SW, SE, NE, NW)
-3. Lets sliders / config control each corner’s **amplitude / intensity**
-4. Moves every point in **Z** according to **wave interference**
+1. Deploys points on an **X×Y grid** (default **100×100**, X and Y set independently)
+2. Puts wave sources at the **four corners** and optional **mid-edge** points (S/E/N/W)
+3. Lets you toggle each source **on/off** and control per-source **amplitude**, **λ**, and **release** (0–10)
+4. Moves points in **Z** by wave interference; **release** unlocks **XY** as a connected **surface** (motion spreads from the source across the plane)
 5. Reconnects the displaced points into a **serpentine line** geometry
 
-Each corner emits a circular travelling wave:
+Each active source emits a circular travelling wave with its own amplitude and λ
+(`time` / `decay` are global). Numeric controls default to **0** (static / locked):
 
 ```text
-z_i(r) = A_i · sin(k · r − ω · t + φ_i) / (1 + decay · r)
-z     = z_SW + z_SE + z_NE + z_NW
+z_i(r) = A_i · sin(k_i · r − ω · t + φ_i) / (1 + decay · r)   with  k_i = 2π / λ_i
+z     = sum of active sources
+release ∈ [0, 10]:  0 = XY locked · 1 = free under waves · 10 = 10× influence
 ```
 
 ---
@@ -44,12 +46,16 @@ from cymatics_geometry import PipelineConfig, run_pipeline, export_line_obj
 from cymatics_geometry.visualization import show_all_stages_matplotlib
 
 config = PipelineConfig(
-    grid_size=100,
+    grid_size_x=100,
+    grid_size_y=100,
     amplitude_sw=1.0,
     amplitude_se=0.85,
     amplitude_ne=0.55,
     amplitude_nw=0.9,
-    wavelength=25.0,
+    wavelength_sw=25.0,
+    wavelength_se=25.0,
+    wavelength_ne=25.0,
+    wavelength_nw=25.0,
 )
 
 result = run_pipeline(config)
@@ -65,7 +71,7 @@ export_line_obj(result, "exports")
 uv run jupyter lab notebooks/cymatics_plane_line.ipynb
 ```
 
-The notebook shows every stage and includes **ipywidgets sliders** for the four corner amplitudes, wavelength, time, and decay.
+The notebook explains each control and includes an **orbitable Plotly 3D line** with per-source on/off, amplitude, release, plus global λ / time / decay / boundary tension.
 
 ---
 
