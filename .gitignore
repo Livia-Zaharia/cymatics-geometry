@@ -1,0 +1,84 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[codz]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environments
+.env
+.envrc
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Ruff / mypy / caches
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pytest_cache/
+
+# IDE / Cursor
+.idea/
+.vscode/
+.cursor/
+.cursorignore
+.cursorindexingignore
+
+# UV
+# uv.lock is kept for apps; optional for libraries — keep it for reproducibility
+# uv.lock
+
+# Exports and generated geometry
+exports/
+*.stl
+*.obj
+*.ply
+*.vtk
+*.vtp
+
+# OS
+.DS_Store
+Thumbs.db

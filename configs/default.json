@@ -1,0 +1,17 @@
+{
+  "grid_size": 100,
+  "side_length": 100.0,
+  "amplitude_sw": 1.0,
+  "amplitude_se": 0.85,
+  "amplitude_ne": 0.55,
+  "amplitude_nw": 0.9,
+  "wavelength": 25.0,
+  "frequency": 1.0,
+  "time": 0.0,
+  "phase_sw": 0.0,
+  "phase_se": 0.0,
+  "phase_ne": 0.0,
+  "phase_nw": 0.0,
+  "decay": 0.0,
+  "line_pattern": "serpentine"
+}
