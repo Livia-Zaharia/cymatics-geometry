@@ -393,6 +393,16 @@ def _subsample_polyline(polyline: np.ndarray, max_vertices: int) -> np.ndarray:
     return joined
 
 
+def _plotly_xyz(points: np.ndarray) -> tuple[list[float], list[float], list[float]]:
+    """FigureWidget needs Python lists — numpy arrays crash trait sync (truthiness)."""
+    pts = np.asarray(points, dtype=float)
+    return pts[:, 0].tolist(), pts[:, 1].tolist(), pts[:, 2].tolist()
+
+
+def _plotly_floats(values: np.ndarray) -> list[float]:
+    return np.asarray(values, dtype=float).reshape(-1).tolist()
+
+
 def _source_marker_colors(active: tuple[bool, ...] | list[bool]) -> list[str]:
     return ["#f59e0b" if on else "#64748b" for on in active]
 
@@ -453,6 +463,12 @@ def _line_figure_widget(
         cloud = line
         travel = np.abs(z)
 
+    cloud_x, cloud_y, cloud_z = _plotly_xyz(cloud)
+    line_x, line_y, line_z = _plotly_xyz(line)
+    src_x, src_y, src_z = _plotly_xyz(sources)
+    travel_list = _plotly_floats(travel)
+    z_list = _plotly_floats(z)
+
     fig = FigureWidget(
         data=[
             go.Scatter3d(
@@ -465,14 +481,14 @@ def _line_figure_widget(
                 hoverinfo="skip",
             ),
             go.Scatter3d(
-                x=cloud[:, 0],
-                y=cloud[:, 1],
-                z=cloud[:, 2],
+                x=cloud_x,
+                y=cloud_y,
+                z=cloud_z,
                 mode="markers",
                 name="points",
                 marker={
                     "size": 2.5,
-                    "color": travel,
+                    "color": travel_list,
                     "colorscale": "Viridis",
                     "cmin": 0.0,
                     "cmax": travel_max,
@@ -487,14 +503,14 @@ def _line_figure_widget(
                 hoverinfo="skip",
             ),
             go.Scatter3d(
-                x=line[:, 0],
-                y=line[:, 1],
-                z=line[:, 2],
+                x=line_x,
+                y=line_y,
+                z=line_z,
                 mode="lines",
                 name="line",
                 line={
                     "width": 2,
-                    "color": z,
+                    "color": z_list,
                     "colorscale": "RdBu",
                     "cmin": -z_lim,
                     "cmax": z_lim,
@@ -508,9 +524,9 @@ def _line_figure_widget(
                 hoverinfo="skip",
             ),
             go.Scatter3d(
-                x=sources[:, 0],
-                y=sources[:, 1],
-                z=sources[:, 2],
+                x=src_x,
+                y=src_y,
+                z=src_z,
                 mode="markers+text",
                 name="sources",
                 text=list(labels),
@@ -598,26 +614,30 @@ def _apply_result_to_figure(
     ly = "Y" if result.config.lines_y else ""
     dirs = f"{lx}+{ly}".strip("+") or "none"
 
+    cloud_x, cloud_y, cloud_z = _plotly_xyz(cloud)
+    line_x, line_y, line_z = _plotly_xyz(line)
+    src_x, src_y, src_z = _plotly_xyz(sources)
+
     with fig.batch_update():
         # 0 = original XY footprint, 1 = points, 2 = line, 3 = sources
         fig.data[0].x = [0.0, s, s, 0.0, 0.0]
         fig.data[0].y = [0.0, 0.0, s, s, 0.0]
         fig.data[0].z = [0.0, 0.0, 0.0, 0.0, 0.0]
-        fig.data[1].x = cloud[:, 0]
-        fig.data[1].y = cloud[:, 1]
-        fig.data[1].z = cloud[:, 2]
-        fig.data[1].marker.color = travel
+        fig.data[1].x = cloud_x
+        fig.data[1].y = cloud_y
+        fig.data[1].z = cloud_z
+        fig.data[1].marker.color = _plotly_floats(travel)
         fig.data[1].marker.cmin = 0.0
         fig.data[1].marker.cmax = travel_max
-        fig.data[2].x = line[:, 0]
-        fig.data[2].y = line[:, 1]
-        fig.data[2].z = line[:, 2]
-        fig.data[2].line.color = z
+        fig.data[2].x = line_x
+        fig.data[2].y = line_y
+        fig.data[2].z = line_z
+        fig.data[2].line.color = _plotly_floats(z)
         fig.data[2].line.cmin = -z_lim
         fig.data[2].line.cmax = z_lim
-        fig.data[3].x = sources[:, 0]
-        fig.data[3].y = sources[:, 1]
-        fig.data[3].z = sources[:, 2]
+        fig.data[3].x = src_x
+        fig.data[3].y = src_y
+        fig.data[3].z = src_z
         fig.data[3].text = list(labels)
         fig.data[3].marker.color = _source_marker_colors(active)
         fig.layout.scene.xaxis.range = [-xy_pad, s + xy_pad]
