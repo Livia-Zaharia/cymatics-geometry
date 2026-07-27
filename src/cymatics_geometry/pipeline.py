@@ -108,7 +108,7 @@ def run_pipeline(
             f"z∈[{float(displacement.min()):.4f}, {float(displacement.max()):.4f}]"
         )
 
-    # Stage 4 — Z waves + radial XY release mobility
+    # Stage 4 — Z waves + radial XY shockwave from released sources
     xy_offsets = release_xy_offsets(
         grid_points,
         config,
@@ -129,12 +129,16 @@ def run_pipeline(
         nx,
         ny,
         pattern=config.line_pattern,
+        lines_x=bool(config.lines_x),
+        lines_y=bool(config.lines_y),
     )
     length = polyline_length(polyline)
     if verbose:
         print(
             f"Stage 5 — line geometry: {len(polyline)} vertices, "
-            f"length={length:.3f}, cells={line_mesh.n_cells}"
+            f"length={length:.3f}, cells={line_mesh.n_cells} "
+            f"(pattern={config.line_pattern}, "
+            f"X={config.lines_x}, Y={config.lines_y})"
         )
 
     stats = {
@@ -160,8 +164,11 @@ def run_pipeline(
         "frequency": float(config.frequency),
         "time": float(config.time),
         "boundary_tension": float(config.boundary_tension),
+        "cloth": float(config.cloth),
         "release_pace": float(config.release_pace),
         "line_pattern": config.line_pattern,
+        "lines_x": bool(config.lines_x),
+        "lines_y": bool(config.lines_y),
     }
 
     return PipelineResult(

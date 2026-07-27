@@ -1,6 +1,6 @@
 # cymatics-geometry
 
-Plane-of-points geometry displaced by **four-corner cymatics wave interference**, then reconnected into a continuous **line**.
+Plane-of-points geometry displaced by **multi-source cymatics wave interference**, then reconnected into **parallel X/Y grid lines**.
 
 Built in the same spirit as [`enhancement-geometry`](https://github.com/Livia-Zaharia/enhancement-geometry) (the Voronoi / lofted-cylinder library used by [Materialized Enhancements](https://github.com/Livia-Zaharia/materialized-enchancements)): typed `PipelineConfig`, staged `run_pipeline`, PyVista visualization, Typer CLI, and a Jupyter notebook for debugging.
 
@@ -14,17 +14,17 @@ Instead of lofting stacked circles into a cylindrical shell, this library:
 
 1. Deploys points on an **X×Y grid** (default **100×100**, X and Y set independently)
 2. Puts wave sources at the **four corners** and optional **mid-edge** points (S/E/N/W)
-3. Lets you toggle each source **on/off** and control per-source **amplitude**, **λ**, and **release** (0–10)
-4. Moves points in **Z** by wave interference; **release** unlocks **XY** as a connected **surface** (motion spreads from the source across the plane)
-5. Reconnects the displaced points into a **serpentine line** geometry
+3. Controls per-source **amplitude**, **λ**, and **release** (0–150 world units, 1:1); sources are always eligible — leave sliders at 0 to idle
+4. Moves points in **Z** by wave interference; **release** applies a radial **XY** shockwave with optional **cloth** springs (core stiff / edge soft)
+5. Reconnects the displaced points into **parallel X-row and Y-column lines** (either direction can be turned off)
 
-Each active source emits a circular travelling wave with its own amplitude and λ
-(`time` / `decay` are global). Numeric controls default to **0** (static / locked):
+Each source with amp/λ emits a circular travelling wave
+(`time` / `decay` / `cloth` are global). Numeric controls default to **0**:
 
 ```text
 z_i(r) = A_i · sin(k_i · r − ω · t + φ_i) / (1 + decay · r)   with  k_i = 2π / λ_i
-z     = sum of active sources
-release ∈ [0, 10]:  0 = XY locked · 1 = free under waves · 10 = 10× influence
+z     = sum of sources
+release ∈ [0, 150]:  0 = XY locked · value ≈ peak world-unit shove near the source
 ```
 
 ---
@@ -113,7 +113,7 @@ cymatics-geometry/
 │   ├── config.py          # PipelineConfig + JSON I/O
 │   ├── grid.py            # square grid + corner positions
 │   ├── waves.py           # four-corner interference
-│   ├── lines.py           # serpentine / row-major reconnection
+│   ├── lines.py           # grid X/Y parallel lines (+ legacy serpentine)
 │   ├── pipeline.py        # run_pipeline + exports
 │   ├── visualization.py   # stage viewers
 │   └── cli.py             # typer CLI (`cymatics`)

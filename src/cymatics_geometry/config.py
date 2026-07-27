@@ -19,8 +19,8 @@ class PipelineConfig:
     Up to eight wave sources: four corners (SW/SE/NE/NW) and four mid-edge
     points (S/E/N/W). Only *active* sources contribute.
 
-    Per-source: amplitude, wavelength (λ), release (0 locked … 1 free … 10×).
-    Global: time, frequency, decay. Optional boundary_tension dampens XY motion.
+    Per-source: amplitude, wavelength (λ), release (0 locked … radial XY shockwave).
+    Global: time, frequency, decay, cloth (core-stiff / edge-soft gradient).
     Numeric controls default to 0 (static / locked until you raise them).
     """
 
@@ -40,18 +40,20 @@ class PipelineConfig:
     amplitude_w: float = 0.0
 
     # Which sources emit (default: corners only)
+    # Sources are always eligible; amp/λ/release = 0 means no contribution.
+    # ``active_*`` flags remain for config compat but default to True.
     active_sw: bool = True
     active_se: bool = True
     active_ne: bool = True
     active_nw: bool = True
-    active_s: bool = False
-    active_e: bool = False
-    active_n: bool = False
-    active_w: bool = False
+    active_s: bool = True
+    active_e: bool = True
+    active_n: bool = True
+    active_w: bool = True
 
-    # Per-source XY release mobility in [0, 10]:
-    # 0 = locked in original XY, 1 = free under wave influence, 10 = 10× influence.
-    # Spreads radially from the source across the grid.
+    # Per-source XY shockwave strength in [0, 150]:
+    # 0 = locked; value ≈ peak shove in world units near the source.
+    # Cloth neighbour springs keep the plane one connected surface.
     release_sw: float = 0.0
     release_se: float = 0.0
     release_ne: float = 0.0
@@ -89,12 +91,20 @@ class PipelineConfig:
     phase_n: float = 0.0
     phase_w: float = 0.0
 
-    # Optional global dampener on XY release (0 = none)
+    # Cloth / membrane stiffness in [0, 100]:
+    # 0 = no internal springs; 100 = strong. Always applied with a spatial
+    # gradient — core stiffer, edges more flexible — whatever the value.
+    cloth: float = 0.0
+    # Optional legacy dampener (kept for config compat; cloth is preferred)
     boundary_tension: float = 0.0
     # Deprecated: ignored by the radial release model (kept for config compat)
     release_pace: float = 0.0
 
-    line_pattern: str = "serpentine"
+    # Line geometry: "grid" = parallel X/Y lines; serpentine|row_major = legacy
+    line_pattern: str = "grid"
+    # Which grid directions to draw (only used when line_pattern == "grid")
+    lines_x: bool = True
+    lines_y: bool = True
 
     @property
     def grid_size(self) -> int:
@@ -168,10 +178,22 @@ class PipelineConfig:
 
     @property
     def effective_amplitudes(self) -> tuple[float, ...]:
-        """Amplitudes with inactive sources zeroed."""
-        return tuple(
-            amp if on else 0.0 for amp, on in zip(self.amplitudes, self.active_flags)
-        )
+        """Amplitudes as set (sources are always on; 0 amp = no wave)."""
+        return self.amplitudes
+
+    def engaged_source_labels(self) -> list[str]:
+        """Sources with any non-zero amp, λ, or release."""
+        engaged: list[str] = []
+        for label, amp, wl, rel in zip(
+            _SOURCE_LABELS, self.amplitudes, self.wavelengths, self.releases
+        ):
+            if amp > 0.0 or wl > 0.0 or rel > 0.0:
+                engaged.append(label)
+        return engaged
+
+    def active_source_labels(self) -> list[str]:
+        """Labels that are contributing (non-zero controls)."""
+        return self.engaged_source_labels()
 
     @property
     def wave_numbers(self) -> tuple[float, ...]:
@@ -192,9 +214,6 @@ class PipelineConfig:
     def angular_frequency(self) -> float:
         """Temporal angular frequency ω = 2π f (global)."""
         return 2.0 * math.pi * self.frequency
-
-    def active_source_labels(self) -> list[str]:
-        return [label for label, on in zip(_SOURCE_LABELS, self.active_flags) if on]
 
     def with_amplitudes(
         self,

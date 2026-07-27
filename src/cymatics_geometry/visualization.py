@@ -20,15 +20,15 @@ from cymatics_geometry.pipeline import PipelineResult, run_pipeline
 
 
 def _source_arrays(result: PipelineResult) -> tuple[np.ndarray, tuple[str, ...], tuple[bool, ...]]:
-    """Return source XYZ, labels, and active flags for plotting."""
+    """Return source XYZ, labels, and engaged flags for plotting."""
     sources = getattr(result, "sources", None)
+    engaged = set(result.config.engaged_source_labels())
     if sources is None or len(sources) == 0:
         sources = result.corners
         labels: tuple[str, ...] = ("SW", "SE", "NE", "NW")
-        active = result.config.active_flags[: len(sources)]
     else:
         labels = tuple(result.source_labels)
-        active = result.config.active_flags
+    active = tuple(label in engaged for label in labels)
     return np.asarray(sources, dtype=float), labels, active
 
 
@@ -273,12 +273,29 @@ def show_all_stages_matplotlib(result: PipelineResult, *, figsize: tuple[int, in
     ax3.set_zlabel("Z")
 
     ax4 = fig.add_subplot(2, 2, 4, projection="3d")
-    # Subsample the polyline for a readable plot
-    line = result.polyline[:: max(1, len(result.polyline) // 4000)]
-    norm = Normalize(vmin=line[:, 2].min(), vmax=line[:, 2].max())
+    line = np.asarray(result.polyline, dtype=float)
+    # Matplotlib breaks the stroke on NaNs — perfect for grid segments
     ax4.plot(line[:, 0], line[:, 1], line[:, 2], color="#7c3aed", linewidth=0.6)
-    ax4.scatter(line[::20, 0], line[::20, 1], line[::20, 2], c=line[::20, 2], cmap="coolwarm", s=4, norm=norm)
-    ax4.set_title("5  Reconnected line")
+    finite = np.isfinite(line).all(axis=1)
+    pts = line[finite]
+    if len(pts):
+        step = max(1, len(pts) // 200)
+        norm = Normalize(vmin=pts[:, 2].min(), vmax=pts[:, 2].max())
+        ax4.scatter(
+            pts[::step, 0],
+            pts[::step, 1],
+            pts[::step, 2],
+            c=pts[::step, 2],
+            cmap="coolwarm",
+            s=4,
+            norm=norm,
+        )
+    dirs = []
+    if result.config.lines_x:
+        dirs.append("X")
+    if result.config.lines_y:
+        dirs.append("Y")
+    ax4.set_title(f"5  Grid lines ({'+'.join(dirs) or 'none'})")
     ax4.set_xlabel("X")
     ax4.set_ylabel("Y")
     ax4.set_zlabel("Z")
@@ -342,9 +359,38 @@ def _subsample_indices(n: int, max_vertices: int) -> np.ndarray:
 
 
 def _subsample_polyline(polyline: np.ndarray, max_vertices: int) -> np.ndarray:
-    """Keep interactive redraws light while preserving the path shape."""
+    """Keep interactive redraws light; preserve NaN segment breaks for grid lines."""
     pts = np.asarray(polyline, dtype=float)
-    return pts[_subsample_indices(len(pts), max_vertices)]
+    if len(pts) == 0:
+        return pts
+    if not np.isnan(pts).any():
+        return pts[_subsample_indices(len(pts), max_vertices)]
+
+    # Split on NaN rows, subsample each segment, rejoin with NaN breaks
+    chunks: list[np.ndarray] = []
+    start = 0
+    finite = np.isfinite(pts).all(axis=1)
+    for i in range(len(pts) + 1):
+        at_break = i == len(pts) or not finite[i]
+        if at_break:
+            seg = pts[start:i]
+            if len(seg) > 0:
+                # Budget vertices roughly evenly across segments later; cap per seg
+                cap = max(8, max_vertices // 8)
+                chunks.append(seg[_subsample_indices(len(seg), min(len(seg), cap))])
+            start = i + 1
+    if not chunks:
+        return np.zeros((0, 3), dtype=float)
+    out: list[np.ndarray] = []
+    for i, seg in enumerate(chunks):
+        out.append(seg)
+        if i + 1 < len(chunks):
+            out.append(np.full((1, 3), np.nan))
+    joined = np.vstack(out)
+    if len(joined) > max_vertices * 2:
+        # Hard fallback if too many segments
+        return joined[_subsample_indices(len(joined), max_vertices)]
+    return joined
 
 
 def _source_marker_colors(active: tuple[bool, ...] | list[bool]) -> list[str]:
@@ -360,12 +406,13 @@ def _fixed_display_scales(
 
     Slider amp maps 1:1 into Z. Keeping ±z_display_max fixed means amp=1 is
     always 1/z_display_max of full height/color, not remapped to "full red".
+    XY pad is generous so release shockwaves leaving the square stay in frame.
     """
     s = float(side_length)
     z_lim = max(float(z_display_max), 1e-6)
-    # Room for release motion outside the square without reframing each drag
-    xy_pad = 0.25 * s
-    travel_max = 0.35 * s
+    # Tight pad so the square fills the view (still room for modest release)
+    xy_pad = 0.28 * s
+    travel_max = 150.0
     return z_lim, xy_pad, travel_max
 
 
@@ -474,11 +521,11 @@ def _line_figure_widget(
         ]
     )
     fig.update_layout(
-        height=780,
-        width=780,
-        margin={"l": 0, "r": 0, "t": 40, "b": 0},
+        height=900,
+        width=900,
+        margin={"l": 0, "r": 0, "t": 36, "b": 0},
         paper_bgcolor="#111827",
-        font={"color": "#e5e7eb"},
+        font={"color": "#e5e7eb", "size": 11},
         title={
             "text": (
                 f"Fixed scale · Z ∈ [−{z_lim:g}, {z_lim:g}] "
@@ -486,7 +533,7 @@ def _line_figure_widget(
             ),
             "x": 0.02,
             "xanchor": "left",
-            "font": {"size": 12},
+            "font": {"size": 11},
         },
         scene={
             "xaxis": {
@@ -513,7 +560,8 @@ def _line_figure_widget(
             "aspectmode": "manual",
             "aspectratio": {"x": 1, "y": 1, "z": 0.45},
             "bgcolor": "#111827",
-            "camera": {"eye": {"x": 1.55, "y": -1.75, "z": 1.15}},
+            # Closer camera = denser / larger subject in the frame
+            "camera": {"eye": {"x": 1.05, "y": -1.15, "z": 0.85}},
         },
         showlegend=False,
         uirevision="cymatics-line",
@@ -530,6 +578,8 @@ def _apply_result_to_figure(
 ) -> None:
     """Mutate an existing FigureWidget in place — fixed units, camera preserved."""
     line = _subsample_polyline(result.polyline, max_vertices)
+    if len(line) == 0:
+        line = np.full((1, 3), np.nan, dtype=float)
     z = line[:, 2]
     sources, labels, active = _source_arrays(result)
 
@@ -544,6 +594,9 @@ def _apply_result_to_figure(
     z_lim, xy_pad, travel_max = _fixed_display_scales(
         s, z_display_max=z_display_max
     )
+    lx = "X" if result.config.lines_x else ""
+    ly = "Y" if result.config.lines_y else ""
+    dirs = f"{lx}+{ly}".strip("+") or "none"
 
     with fig.batch_update():
         # 0 = original XY footprint, 1 = points, 2 = line, 3 = sources
@@ -571,8 +624,7 @@ def _apply_result_to_figure(
         fig.layout.scene.yaxis.range = [-xy_pad, s + xy_pad]
         fig.layout.scene.zaxis.range = [-z_lim, z_lim]
         fig.layout.title.text = (
-            f"Fixed scale · Z ∈ [−{z_lim:g}, {z_lim:g}] "
-            "(amp maps 1:1 — low amp stays visually small)"
+            f"Grid lines {dirs} · Z ∈ [−{z_lim:g}, {z_lim:g}]"
         )
 
 
@@ -594,103 +646,137 @@ def show_interactive_line_viewer(
     max_vertices: int = 4000,
     amplitude_max: float = 10.0,
 ):
-    """Notebook UI: source dropdown + sliders, orbitable 3D view on the left."""
+    """Notebook UI: all 8 sources + globals in one scrollable panel, view on the left."""
     from IPython.display import display
     from ipywidgets import (
-        Dropdown,
+        Button,
+        Checkbox,
         FloatSlider,
         HTML,
         HBox,
         IntSlider,
-        Label,
         Layout,
-        ToggleButtons,
         VBox,
     )
 
     base = config or PipelineConfig(grid_size_x=60, grid_size_y=60)
 
-    slider_layout = Layout(width="95%")
-    desc_style = {"description_width": "140px"}
+    src_style = {"description_width": "58px"}
+    global_style = {"description_width": "72px"}
+    full_slider = Layout(width="96%", height="32px")
 
-    # All numeric controls start at 0; active flags follow config (corners on).
-    state: dict[str, dict[str, float | bool]] = {}
+    source_widgets: dict[str, dict] = {}
     for label in SOURCE_LABELS:
         key = label.lower()
-        state[key] = {
-            "active": bool(getattr(base, f"active_{key}")),
-            "amp": 0.0,
-            "wavelength": 0.0,
-            "release": 0.0,
+        role = _SOURCE_ROLES[label]
+        link_cb = Checkbox(
+            value=False,
+            description="sync",
+            indent=False,
+            layout=Layout(width="72px", height="28px"),
+            tooltip="Share amp / λ / release with other synced sources",
+        )
+        amp = FloatSlider(
+            value=0.0,
+            min=0.0,
+            max=float(amplitude_max),
+            step=0.01,
+            description="amp",
+            continuous_update=True,
+            readout=True,
+            readout_format=".2f",
+            style=src_style,
+            layout=full_slider,
+        )
+        wl = FloatSlider(
+            value=0.0,
+            min=0.0,
+            max=80.0,
+            step=0.5,
+            description="λ",
+            continuous_update=True,
+            readout=True,
+            readout_format=".1f",
+            style=src_style,
+            layout=full_slider,
+        )
+        rel = FloatSlider(
+            value=0.0,
+            min=0.0,
+            max=150.0,
+            step=0.1,
+            description="release",
+            continuous_update=True,
+            readout=True,
+            readout_format=".1f",
+            style=src_style,
+            layout=full_slider,
+        )
+        header = HBox(
+            [
+                HTML(
+                    "<div style='flex:1;line-height:1.2'>"
+                    f"<div style='font-size:20px;font-weight:800;"
+                    f"letter-spacing:0.02em'>{label}</div>"
+                    f"<div style='font-size:11px;color:#6b7280'>{role}</div>"
+                    "</div>"
+                ),
+                link_cb,
+            ],
+            layout=Layout(
+                width="100%",
+                align_items="center",
+                margin="0 0 4px 0",
+            ),
+        )
+        block = VBox(
+            [header, amp, wl, rel],
+            layout=Layout(
+                width="100%",
+                border="1px solid #d1d5db",
+                padding="8px 8px 6px 8px",
+                margin="0 0 10px 0",
+            ),
+        )
+        source_widgets[key] = {
+            "label": label,
+            "link": link_cb,
+            "amp": amp,
+            "wavelength": wl,
+            "release": rel,
+            "block": block,
         }
 
-    source_dd = Dropdown(
-        options=[
-            (f"{label} — {_SOURCE_ROLES[label]}", label) for label in SOURCE_LABELS
-        ],
-        value="SW",
-        description="source",
-        style={"description_width": "70px"},
-        layout=Layout(width="95%"),
-    )
-    source_header = HTML(value="")
-    active_tb = ToggleButtons(
-        options=[("off", False), ("on", True)],
-        value=True,
-        description="active",
-        style={"description_width": "70px"},
-        layout=Layout(width="100%"),
-    )
-    amp_sl = FloatSlider(
-        value=0.0,
-        min=0.0,
-        max=float(amplitude_max),
-        step=0.01,
-        description="amp (=Z height)",
-        continuous_update=True,
-        readout_format=".2f",
-        style=desc_style,
-        layout=slider_layout,
-    )
-    wl_sl = FloatSlider(
-        value=0.0,
-        min=0.0,
-        max=80.0,
-        step=0.5,
-        description="λ (wavelength)",
-        continuous_update=True,
-        style=desc_style,
-        layout=slider_layout,
-    )
-    release_sl = FloatSlider(
-        value=0.0,
-        min=0.0,
-        max=10.0,
-        step=0.05,
-        description="release (0–10)",
-        continuous_update=True,
-        style=desc_style,
-        layout=slider_layout,
-        readout_format=".2f",
-    )
     time_sl = FloatSlider(
         value=0.0,
         min=0.0,
         max=6.28,
         step=0.05,
-        description="time (global)",
-        style=desc_style,
-        layout=slider_layout,
+        description="time",
+        style=global_style,
+        layout=full_slider,
+        readout_format=".2f",
     )
     decay_sl = FloatSlider(
         value=0.0,
         min=0.0,
         max=0.05,
         step=0.001,
-        description="decay (global)",
+        description="decay",
         readout_format=".3f",
-        style=desc_style,
-        layout=slider_layout,
+        style=global_style,
+        layout=full_slider,
+    )
+    cloth_sl = FloatSlider(
+        value=0.0,
+        min=0.0,
+        max=100.0,
+        step=0.1,
+        description="cloth",
+        continuous_update=True,
+        readout_format=".1f",
+        style=global_style,
+        layout=full_slider,
     )
     grid_x = IntSlider(
         value=min(int(base.grid_size_x), 80),
@@ -698,8 +784,8 @@ def show_interactive_line_viewer(
         max=100,
         step=10,
         description="grid X",
-        style=desc_style,
-        layout=slider_layout,
+        style=global_style,
+        layout=full_slider,
     )
     grid_y = IntSlider(
         value=min(int(base.grid_size_y), 80),
@@ -707,46 +793,47 @@ def show_interactive_line_viewer(
         max=100,
         step=10,
         description="grid Y",
-        style=desc_style,
-        layout=slider_layout,
+        style=global_style,
+        layout=full_slider,
     )
-    status = Label(value="", layout=Layout(width="95%"))
+    # Checkboxes are reliable; ToggleButtons(bool) often fail to fire in notebooks
+    lines_x_cb = Checkbox(
+        value=True,
+        description="X lines (rows)",
+        indent=False,
+        layout=Layout(width="160px"),
+    )
+    lines_y_cb = Checkbox(
+        value=True,
+        description="Y lines (cols)",
+        indent=False,
+        layout=Layout(width="160px"),
+    )
+    status = HTML(value="", layout=Layout(width="98%"))
 
     _loading = {"on": False}
 
-    def _current_key() -> str:
-        return str(source_dd.value).lower()
+    def _linked_keys() -> list[str]:
+        # Preserve SOURCE_LABELS order so "first" is well-defined
+        return [
+            label.lower()
+            for label in SOURCE_LABELS
+            if bool(source_widgets[label.lower()]["link"].value)
+        ]
 
-    def _refresh_header() -> None:
-        label = str(source_dd.value)
-        source_header.value = (
-            f"<div style='margin:8px 0;padding:8px;"
-            f"background:#1f2937;border-left:3px solid #f59e0b;color:#f3f4f6'>"
-            f"<b>{label}</b> — {_SOURCE_ROLES[label]}</div>"
-        )
-
-    def _load_source_into_widgets() -> None:
-        _loading["on"] = True
-        st = state[_current_key()]
-        active_tb.value = bool(st["active"])
-        amp_sl.value = float(st["amp"])
-        wl_sl.value = float(st["wavelength"])
-        release_sl.value = float(st["release"])
-        on = bool(st["active"])
-        amp_sl.disabled = not on
-        wl_sl.disabled = not on
-        release_sl.disabled = not on
-        _refresh_header()
-        _loading["on"] = False
-
-    def _save_widgets_into_state() -> None:
-        key = _current_key()
-        state[key] = {
-            "active": bool(active_tb.value),
-            "amp": float(amp_sl.value),
-            "wavelength": float(wl_sl.value),
-            "release": float(release_sl.value),
+    def _read_source(key: str) -> dict[str, float]:
+        w = source_widgets[key]
+        return {
+            "amp": float(w["amp"].value),
+            "wavelength": float(w["wavelength"].value),
+            "release": float(w["release"].value),
         }
+
+    def _write_source(key: str, values: dict[str, float]) -> None:
+        w = source_widgets[key]
+        w["amp"].value = float(values["amp"])
+        w["wavelength"].value = float(values["wavelength"])
+        w["release"].value = float(values["release"])
 
     def _config_from_state() -> PipelineConfig:
         kwargs: dict = {
@@ -756,30 +843,33 @@ def show_interactive_line_viewer(
             "frequency": base.frequency,
             "time": float(time_sl.value),
             "decay": float(decay_sl.value),
+            "cloth": float(cloth_sl.value),
             "boundary_tension": 0.0,
             "release_pace": 0.0,
-            "line_pattern": base.line_pattern,
+            "line_pattern": "grid",
+            "lines_x": bool(lines_x_cb.value),
+            "lines_y": bool(lines_y_cb.value),
         }
-        for label in SOURCE_LABELS:
-            key = label.lower()
-            st = state[key]
-            kwargs[f"active_{key}"] = bool(st["active"])
-            kwargs[f"amplitude_{key}"] = float(st["amp"])
-            kwargs[f"wavelength_{key}"] = float(st["wavelength"])
-            kwargs[f"release_{key}"] = float(st["release"])
-        kwargs["wavelength"] = float(state["sw"]["wavelength"])
+        for key, w in source_widgets.items():
+            kwargs[f"active_{key}"] = True
+            kwargs[f"amplitude_{key}"] = float(w["amp"].value)
+            kwargs[f"wavelength_{key}"] = float(w["wavelength"].value)
+            kwargs[f"release_{key}"] = float(w["release"].value)
+        kwargs["wavelength"] = float(source_widgets["sw"]["wavelength"].value)
         return PipelineConfig(**kwargs)
 
     def _status_text(live: PipelineResult) -> str:
+        lx = "X" if live.config.lines_x else ""
+        ly = "Y" if live.config.lines_y else ""
+        dirs = f"{lx}+{ly}".strip("+") or "none"
         return (
-            f"active={live.stats['active_labels']}  "
-            f"points={live.stats['point_count']}  "
-            f"z∈[{live.stats['displacement_min']:.3f}, {live.stats['displacement_max']:.3f}]  "
-            f"XY travel max={live.stats.get('xy_offset_max', 0.0):.2f}  "
-            f"xy_moved={live.stats.get('xy_released', 0)}"
+            "<div style='font-size:11px;color:#4b5563;margin-top:6px'>"
+            f"lines=<b>{dirs}</b> · engaged={live.stats['active_labels']} · "
+            f"z∈[{live.stats['displacement_min']:.2f}, {live.stats['displacement_max']:.2f}] · "
+            f"XY max={live.stats.get('xy_offset_max', 0.0):.1f}"
+            "</div>"
         )
 
-    _load_source_into_widgets()
     initial = run_pipeline(_config_from_state(), verbose=False)
     sources, labels, active = _source_arrays(initial)
     fig = _line_figure_widget(
@@ -798,11 +888,6 @@ def show_interactive_line_viewer(
     def _rerun(_change: object | None = None) -> None:
         if _loading["on"]:
             return
-        _save_widgets_into_state()
-        on = bool(active_tb.value)
-        amp_sl.disabled = not on
-        wl_sl.disabled = not on
-        release_sl.disabled = not on
         live = run_pipeline(_config_from_state(), verbose=False)
         _apply_result_to_figure(
             fig,
@@ -812,60 +897,139 @@ def show_interactive_line_viewer(
         )
         status.value = _status_text(live)
 
-    # Dropdown change: persist the previous source's widgets, then load the next
-    _prev = {"label": str(source_dd.value)}
-
-    def _on_dropdown(change: dict) -> None:
-        if change.get("name") != "value":
+    def _mirror_from_first(linked: list[str]) -> None:
+        """Copy first selected source (SOURCE_LABELS order) onto the rest."""
+        if len(linked) < 2:
             return
-        old = str(_prev["label"]).lower()
-        state[old] = {
-            "active": bool(active_tb.value),
-            "amp": float(amp_sl.value),
-            "wavelength": float(wl_sl.value),
-            "release": float(release_sl.value),
-        }
-        _prev["label"] = str(change["new"])
-        _load_source_into_widgets()
+        values = _read_source(linked[0])
+        _loading["on"] = True
+        for key in linked[1:]:
+            _write_source(key, values)
+        _loading["on"] = False
+
+    def _on_source_slider(change: dict) -> None:
+        if _loading["on"] or change.get("name") != "value":
+            return
+        owner = change.get("owner")
+        src_key = None
+        for key, w in source_widgets.items():
+            if owner in (w["amp"], w["wavelength"], w["release"]):
+                src_key = key
+                break
+        if src_key is None:
+            return
+        linked = _linked_keys()
+        if src_key in linked and len(linked) > 1:
+            values = _read_source(src_key)
+            _loading["on"] = True
+            for key in linked:
+                if key != src_key:
+                    _write_source(key, values)
+            _loading["on"] = False
         _rerun()
 
-    source_dd.observe(_on_dropdown, names="value")
-    for w in (active_tb, amp_sl, wl_sl, release_sl, time_sl, decay_sl, grid_x, grid_y):
+    def _select_and_mirror(keys: set[str]) -> None:
+        _loading["on"] = True
+        for key, w in source_widgets.items():
+            w["link"].value = key in keys
+        _loading["on"] = False
+        linked = _linked_keys()
+        _mirror_from_first(linked)
+        _rerun()
+
+    def _link_corners(_btn: object = None) -> None:
+        _select_and_mirror({"sw", "se", "ne", "nw"})
+
+    def _link_mids(_btn: object = None) -> None:
+        _select_and_mirror({"s", "e", "n", "w"})
+
+    def _link_all(_btn: object = None) -> None:
+        _select_and_mirror(set(source_widgets.keys()))
+
+    def _link_clear(_btn: object = None) -> None:
+        _loading["on"] = True
+        for w in source_widgets.values():
+            w["link"].value = False
+        _loading["on"] = False
+
+    btn_style = Layout(width="88px", height="28px", margin="2px")
+    btn_corners = Button(description="corners", layout=btn_style)
+    btn_mids = Button(description="mids", layout=btn_style)
+    btn_all = Button(description="all", layout=btn_style)
+    btn_clear = Button(description="clear", layout=btn_style)
+    btn_corners.on_click(_link_corners)
+    btn_mids.on_click(_link_mids)
+    btn_all.on_click(_link_all)
+    btn_clear.on_click(_link_clear)
+
+    for w in source_widgets.values():
+        for sl in (w["amp"], w["wavelength"], w["release"]):
+            sl.observe(_on_source_slider, names="value")
+
+    for w in (time_sl, decay_sl, cloth_sl, grid_x, grid_y, lines_x_cb, lines_y_cb):
         w.observe(_rerun, names="value")
 
+    source_blocks = [source_widgets[label.lower()]["block"] for label in SOURCE_LABELS]
     controls = VBox(
         [
             HTML(
-                "<b>Source controls</b><br>"
-                "<span style='color:#9ca3af;font-size:12px'>"
-                "Need <b>amp + λ + release</b> together. "
-                "Display axes/colors are <b>fixed</b> to slider max "
-                f"(Z ∈ [−{amplitude_max:g}, {amplitude_max:g}]) — "
-                "amp=1 is 1 unit tall, not remapped to full red. "
-                "release moves real XY (leave the dashed square)."
-                "</span>"
+                "<style>"
+                ".cym-panel { overflow-x: hidden !important; }"
+                ".cym-panel .jupyter-widgets { font-size: 12px !important; }"
+                ".cym-panel .widget-label { font-size: 12px !important; }"
+                ".cym-panel .widget-readout { font-size: 12px !important; }"
+                ".cym-panel .widget-box { overflow: visible !important; }"
+                "</style>"
+                "<div style='font-size:13px;margin:0 0 10px 0'>"
+                "<b>Sources</b> "
+                "<span style='color:#6b7280;font-size:11px'>"
+                "— titled blocks · values on the right · sync to mirror"
+                "</span></div>"
             ),
-            source_dd,
-            source_header,
-            active_tb,
-            amp_sl,
-            wl_sl,
-            release_sl,
-            HTML("<div style='margin-top:12px'><b>Global</b></div>"),
+            *source_blocks,
+            HTML(
+                "<div style='font-size:13px;margin:14px 0 4px 0'><b>Mirroring</b> "
+                "<span style='color:#6b7280;font-size:11px'>"
+                "copies from the <b>first</b> selected point in order "
+                "(SW→SE→NE→NW→S→E→N→W)"
+                "</span></div>"
+            ),
+            HBox(
+                [btn_corners, btn_mids, btn_all, btn_clear],
+                layout=Layout(width="100%", flex_flow="row wrap"),
+            ),
+            HTML(
+                "<div style='font-size:13px;margin:14px 0 4px 0'><b>Global</b></div>"
+            ),
             time_sl,
             decay_sl,
+            cloth_sl,
             grid_x,
             grid_y,
+            HTML(
+                "<div style='font-size:12px;margin:8px 0 4px 0'>"
+                "<b>Grid lines</b> "
+                "<span style='color:#6b7280;font-size:11px'>"
+                "uncheck to hide that direction"
+                "</span></div>"
+            ),
+            HBox(
+                [lines_x_cb, lines_y_cb],
+                layout=Layout(width="100%"),
+            ),
             status,
         ],
         layout=Layout(
-            width="440px",
-            height="780px",
+            width="380px",
+            height="900px",
+            overflow_x="hidden",
+            overflow_y="scroll",
             border="1px solid #374151",
-            padding="8px",
+            padding="10px",
             margin="0 0 0 8px",
         ),
     )
+    controls.add_class("cym-panel")
     ui = HBox(
         [fig, controls],
         layout=Layout(width="100%", align_items="flex-start"),

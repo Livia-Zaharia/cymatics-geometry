@@ -14,10 +14,10 @@
   "active_se": true,
   "active_ne": true,
   "active_nw": true,
-  "active_s": false,
-  "active_e": false,
-  "active_n": false,
-  "active_w": false,
+  "active_s": true,
+  "active_e": true,
+  "active_n": true,
+  "active_w": true,
   "release_sw": 0.0,
   "release_se": 0.0,
   "release_ne": 0.0,
@@ -47,6 +47,9 @@
   "phase_n": 0.0,
   "phase_w": 0.0,
   "boundary_tension": 0.0,
+  "cloth": 0.0,
   "release_pace": 0.0,
-  "line_pattern": "serpentine"
+  "line_pattern": "grid",
+  "lines_x": true,
+  "lines_y": true
 }

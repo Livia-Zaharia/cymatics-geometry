@@ -54,8 +54,19 @@ def generate(
     decay: Annotated[float, typer.Option("--decay", help="Distance amplitude decay.")] = 0.0,
     pattern: Annotated[
         str,
-        typer.Option("--pattern", help="Line reconnection pattern: serpentine|row_major."),
-    ] = "serpentine",
+        typer.Option(
+            "--pattern",
+            help="Line reconnection: grid|serpentine|row_major.",
+        ),
+    ] = "grid",
+    lines_x: Annotated[
+        bool,
+        typer.Option("--lines-x/--no-lines-x", help="Draw X-parallel grid lines."),
+    ] = True,
+    lines_y: Annotated[
+        bool,
+        typer.Option("--lines-y/--no-lines-y", help="Draw Y-parallel grid lines."),
+    ] = True,
     export_dir: Annotated[
         Path,
         typer.Option("--export-dir", "-o", help="Directory for exported OBJ/PLY files."),
@@ -116,6 +127,8 @@ def generate(
             time=time,
             decay=decay,
             line_pattern=pattern,
+            lines_x=lines_x,
+            lines_y=lines_y,
         )
 
     if not quiet:
