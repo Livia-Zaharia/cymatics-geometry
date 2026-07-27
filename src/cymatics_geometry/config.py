@@ -106,6 +106,18 @@ class PipelineConfig:
     lines_x: bool = True
     lines_y: bool = True
 
+    # Target surface the plane UV + local offsets are mapped onto.
+    # Waves always compute on the flat plane; shape only remaps the result.
+    # "plane" | "cylinder" | "cone" | "frustum"
+    shape: str = "plane"
+    cylinder_diameter: float = 40.0
+    cylinder_length: float = 100.0
+    cone_height: float = 100.0
+    cone_base_radius: float = 30.0
+    frustum_height: float = 100.0
+    frustum_base_diameter: float = 60.0
+    frustum_top_diameter: float = 20.0
+
     @property
     def grid_size(self) -> int:
         """Legacy square size alias (``grid_size_x``). Prefer ``grid_size_x`` / ``grid_size_y``."""

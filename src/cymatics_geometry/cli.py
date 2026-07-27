@@ -1,4 +1,4 @@
-"""CLI for the cymatics plane → line geometry generator."""
+"""CLI for the cymatics plane → shape → line geometry generator."""
 
 from __future__ import annotations
 
@@ -10,7 +10,10 @@ import typer
 
 app = typer.Typer(
     name="cymatics",
-    help="Generate line geometry from a 100×100 point plane displaced by four-corner cymatics waves.",
+    help=(
+        "Generate line geometry from a point plane displaced by multi-source "
+        "cymatics waves, optionally mapped onto cylinder / cone / frustum."
+    ),
     add_completion=False,
 )
 
@@ -39,19 +42,31 @@ def generate(
     ] = None,
     side_length: Annotated[
         float,
-        typer.Option("--side", help="Square side length."),
+        typer.Option("--side", help="Square side length (plane UV domain)."),
     ] = 100.0,
     amp_sw: Annotated[float, typer.Option("--amp-sw", help="SW corner amplitude.")] = 1.0,
     amp_se: Annotated[float, typer.Option("--amp-se", help="SE corner amplitude.")] = 0.85,
     amp_ne: Annotated[float, typer.Option("--amp-ne", help="NE corner amplitude.")] = 0.55,
     amp_nw: Annotated[float, typer.Option("--amp-nw", help="NW corner amplitude.")] = 0.9,
+    amp_s: Annotated[float, typer.Option("--amp-s", help="South mid-edge amplitude.")] = 0.0,
+    amp_e: Annotated[float, typer.Option("--amp-e", help="East mid-edge amplitude.")] = 0.0,
+    amp_n: Annotated[float, typer.Option("--amp-n", help="North mid-edge amplitude.")] = 0.0,
+    amp_w: Annotated[float, typer.Option("--amp-w", help="West mid-edge amplitude.")] = 0.0,
     wavelength: Annotated[
         float,
-        typer.Option("--wavelength", "-l", help="Wave length λ for all corner sources."),
+        typer.Option("--wavelength", "-l", help="Wave length (lambda) for active corner sources."),
     ] = 25.0,
     frequency: Annotated[float, typer.Option("--frequency", "-f", help="Wave frequency.")] = 1.0,
     time: Annotated[float, typer.Option("--time", "-t", help="Simulation time.")] = 0.0,
     decay: Annotated[float, typer.Option("--decay", help="Distance amplitude decay.")] = 0.0,
+    cloth: Annotated[
+        float,
+        typer.Option("--cloth", help="Cloth spring strength 0–100 (core stiff / edge soft)."),
+    ] = 0.0,
+    release_sw: Annotated[
+        float,
+        typer.Option("--release-sw", help="SW radial XY release 0–150."),
+    ] = 0.0,
     pattern: Annotated[
         str,
         typer.Option(
@@ -61,12 +76,60 @@ def generate(
     ] = "grid",
     lines_x: Annotated[
         bool,
-        typer.Option("--lines-x/--no-lines-x", help="Draw X-parallel grid lines."),
+        typer.Option("--lines-x/--no-lines-x", help="Draw X/U-parallel grid lines."),
     ] = True,
     lines_y: Annotated[
         bool,
-        typer.Option("--lines-y/--no-lines-y", help="Draw Y-parallel grid lines."),
+        typer.Option("--lines-y/--no-lines-y", help="Draw Y/V-parallel grid lines."),
     ] = True,
+    shape: Annotated[
+        str,
+        typer.Option(
+            "--shape",
+            help="Target surface: plane|cylinder|cone|frustum.",
+        ),
+    ] = "plane",
+    cylinder_diameter: Annotated[
+        float,
+        typer.Option("--cylinder-diameter", help="Cylinder diameter (shape=cylinder)."),
+    ] = 40.0,
+    cylinder_length: Annotated[
+        float,
+        typer.Option("--cylinder-length", help="Cylinder length along V (shape=cylinder)."),
+    ] = 100.0,
+    cone_height: Annotated[
+        float,
+        typer.Option("--cone-height", help="Cone height (shape=cone)."),
+    ] = 100.0,
+    cone_base_radius: Annotated[
+        float,
+        typer.Option("--cone-base-radius", help="Cone base radius at v=0 (shape=cone)."),
+    ] = 30.0,
+    frustum_height: Annotated[
+        float,
+        typer.Option("--frustum-height", help="Frustum height (shape=frustum)."),
+    ] = 100.0,
+    frustum_base_diameter: Annotated[
+        float,
+        typer.Option(
+            "--frustum-base-diameter",
+            help="Frustum base circle diameter at v=0.",
+        ),
+    ] = 60.0,
+    frustum_top_diameter: Annotated[
+        float,
+        typer.Option(
+            "--frustum-top-diameter",
+            help="Frustum top circle diameter at v=1.",
+        ),
+    ] = 20.0,
+    line_color: Annotated[
+        str,
+        typer.Option(
+            "--line-color",
+            help="Viewer/screenshot line colour: difference|white.",
+        ),
+    ] = "difference",
     export_dir: Annotated[
         Path,
         typer.Option("--export-dir", "-o", help="Directory for exported OBJ/PLY files."),
@@ -99,6 +162,20 @@ def generate(
         save_pipeline_config,
     )
     from cymatics_geometry.pipeline import export_line_obj, export_line_ply, run_pipeline
+    from cymatics_geometry.shapes import SHAPE_KINDS
+
+    color_mode = str(line_color).lower().strip()
+    if color_mode not in {"difference", "white"}:
+        typer.echo("--line-color must be 'difference' or 'white'", err=True)
+        raise typer.Exit(1)
+
+    shape_kind = str(shape).lower().strip()
+    if shape_kind not in SHAPE_KINDS:
+        typer.echo(
+            f"--shape must be one of: {', '.join(SHAPE_KINDS)}",
+            err=True,
+        )
+        raise typer.Exit(1)
 
     if config is not None:
         if not config.exists():
@@ -118,6 +195,10 @@ def generate(
             amplitude_se=amp_se,
             amplitude_ne=amp_ne,
             amplitude_nw=amp_nw,
+            amplitude_s=amp_s,
+            amplitude_e=amp_e,
+            amplitude_n=amp_n,
+            amplitude_w=amp_w,
             wavelength=wavelength,
             wavelength_sw=wavelength,
             wavelength_se=wavelength,
@@ -126,13 +207,23 @@ def generate(
             frequency=frequency,
             time=time,
             decay=decay,
+            cloth=cloth,
+            release_sw=release_sw,
             line_pattern=pattern,
             lines_x=lines_x,
             lines_y=lines_y,
+            shape=shape_kind,
+            cylinder_diameter=cylinder_diameter,
+            cylinder_length=cylinder_length,
+            cone_height=cone_height,
+            cone_base_radius=cone_base_radius,
+            frustum_height=frustum_height,
+            frustum_base_diameter=frustum_base_diameter,
+            frustum_top_diameter=frustum_top_diameter,
         )
 
     if not quiet:
-        typer.echo("Running cymatics plane → line pipeline...")
+        typer.echo("Running cymatics plane → shape → line pipeline...")
 
     result = run_pipeline(pipeline_config, verbose=not quiet)
 
@@ -151,14 +242,18 @@ def generate(
     if screenshot is not None:
         from cymatics_geometry.visualization import save_line_screenshot
 
-        save_line_screenshot(result, screenshot)
+        save_line_screenshot(
+            result,
+            screenshot,
+            line_color_mode=color_mode,
+        )
         typer.echo(f"Screenshot saved: {screenshot}")
 
     if viewer:
         from cymatics_geometry.visualization import show_stage_line
 
         typer.echo("Opening interactive viewer (close window to continue)...")
-        show_stage_line(result)
+        show_stage_line(result, line_color_mode=color_mode)
 
 
 @app.command(name="show-config")

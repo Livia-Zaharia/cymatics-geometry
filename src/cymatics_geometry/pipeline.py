@@ -22,6 +22,12 @@ from cymatics_geometry.grid import (
     source_positions,
 )
 from cymatics_geometry.lines import build_line_geometry, polyline_length
+from cymatics_geometry.shapes import (
+    SHAPE_KINDS,
+    ShapeParams,
+    map_points_to_shape,
+    map_sources_to_shape,
+)
 from cymatics_geometry.waves import (
     distances_to_sources,
     displace_points,
@@ -50,13 +56,35 @@ class PipelineResult:
     # Stage 3 — interference field
     displacement: np.ndarray = field(default_factory=lambda: np.zeros(0))
     contributions: np.ndarray = field(default_factory=lambda: np.zeros((0, 8)))
-    # Stage 4 — displaced points (Z + optional border XY release)
+    # Stage 4 — displaced points on the plane (Z + optional XY release)
     displaced_points: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
     xy_offsets: np.ndarray = field(default_factory=lambda: np.zeros((0, 2)))
-    # Stage 5 — reconnected line
+    # Stage 4b — same UV lattice + plane offsets mapped onto the target shape
+    shape_base_points: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    shape_points: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    plane_offsets: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    shape_sources: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    # Stage 5 — reconnected line (on the mapped shape)
     polyline: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
     line_mesh: pv.PolyData = field(default_factory=pv.PolyData)
     stats: dict = field(default_factory=dict)
+
+
+def _shape_params_from_config(config: PipelineConfig) -> ShapeParams:
+    kind = str(config.shape).lower().strip()
+    if kind not in SHAPE_KINDS:
+        allowed = ", ".join(SHAPE_KINDS)
+        raise ValueError(f"Unknown shape {config.shape!r}; expected one of: {allowed}")
+    return ShapeParams(
+        kind=kind,  # type: ignore[arg-type]
+        cylinder_diameter=float(config.cylinder_diameter),
+        cylinder_length=float(config.cylinder_length),
+        cone_height=float(config.cone_height),
+        cone_base_radius=float(config.cone_base_radius),
+        frustum_height=float(config.frustum_height),
+        frustum_base_diameter=float(config.frustum_base_diameter),
+        frustum_top_diameter=float(config.frustum_top_diameter),
+    )
 
 
 def run_pipeline(
@@ -108,7 +136,7 @@ def run_pipeline(
             f"z∈[{float(displacement.min()):.4f}, {float(displacement.max()):.4f}]"
         )
 
-    # Stage 4 — Z waves + radial XY shockwave from released sources
+    # Stage 4 — Z waves + radial XY shockwave from released sources (always on plane)
     xy_offsets = release_xy_offsets(
         grid_points,
         config,
@@ -123,9 +151,25 @@ def run_pipeline(
             f"(xy released: {n_released})"
         )
 
-    # Stage 5
-    polyline, line_mesh = build_line_geometry(
+    # Stage 4b — map plane UV + local offsets onto the selected shape
+    shape_params = _shape_params_from_config(config)
+    shape_base, shape_pts, plane_offs = map_points_to_shape(
+        grid_points,
         displaced,
+        shape_params,
+        side_length=float(config.side_length),
+    )
+    shape_sources = map_sources_to_shape(
+        sources,
+        shape_params,
+        side_length=float(config.side_length),
+    )
+    if verbose:
+        print(f"Stage 4b — shape map: kind={shape_params.kind}")
+
+    # Stage 5 — reconnect on the mapped surface (same nx×ny adjacency)
+    polyline, line_mesh = build_line_geometry(
+        shape_pts,
         nx,
         ny,
         pattern=config.line_pattern,
@@ -169,6 +213,7 @@ def run_pipeline(
         "line_pattern": config.line_pattern,
         "lines_x": bool(config.lines_x),
         "lines_y": bool(config.lines_y),
+        "shape": str(config.shape),
     }
 
     return PipelineResult(
@@ -183,6 +228,10 @@ def run_pipeline(
         contributions=contributions,
         displaced_points=displaced,
         xy_offsets=xy_offsets,
+        shape_base_points=shape_base,
+        shape_points=shape_pts,
+        plane_offsets=plane_offs,
+        shape_sources=shape_sources,
         polyline=polyline,
         line_mesh=line_mesh,
         stats=stats,

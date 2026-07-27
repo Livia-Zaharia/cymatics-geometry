@@ -336,3 +336,97 @@ def test_cloth_zero_skips_springs() -> None:
         verbose=False,
     )
     assert tight.stats["xy_offset_max"] < free.stats["xy_offset_max"]
+
+
+def test_plane_shape_is_identity_map() -> None:
+    result = run_pipeline(
+        PipelineConfig(
+            grid_size_x=12,
+            grid_size_y=10,
+            amplitude_sw=1.5,
+            wavelength_sw=20.0,
+            release_sw=5.0,
+            shape="plane",
+        ),
+        verbose=False,
+    )
+    assert np.allclose(result.shape_points, result.displaced_points)
+    assert np.allclose(result.shape_base_points, result.grid_points)
+    assert np.allclose(
+        result.plane_offsets, result.displaced_points - result.grid_points
+    )
+
+
+def test_cylinder_preserves_point_count_and_line_topology() -> None:
+    result = run_pipeline(
+        PipelineConfig(
+            grid_size_x=16,
+            grid_size_y=12,
+            amplitude_sw=1.0,
+            wavelength_sw=25.0,
+            shape="cylinder",
+            cylinder_diameter=40.0,
+            cylinder_length=80.0,
+        ),
+        verbose=False,
+    )
+    n = 16 * 12
+    assert len(result.shape_points) == n
+    assert len(result.shape_base_points) == n
+    assert result.line_mesh.n_cells == 12 + 16
+    # Undeformed cylinder sits on the radius shell (before wave offsets)
+    radii = np.linalg.norm(result.shape_base_points[:, [0, 2]], axis=1)
+    assert np.allclose(radii, 20.0, atol=1e-6)
+    assert float(result.shape_base_points[:, 1].min()) == 0.0
+    assert float(result.shape_base_points[:, 1].max()) == 80.0
+
+
+def test_cone_and_frustum_map_offsets_in_local_frame() -> None:
+    flat = run_pipeline(
+        PipelineConfig(
+            grid_size_x=11,
+            grid_size_y=11,
+            amplitude_sw=2.0,
+            wavelength_sw=30.0,
+            shape="plane",
+        ),
+        verbose=False,
+    )
+    cone = run_pipeline(
+        PipelineConfig(
+            grid_size_x=11,
+            grid_size_y=11,
+            amplitude_sw=2.0,
+            wavelength_sw=30.0,
+            shape="cone",
+            cone_height=90.0,
+            cone_base_radius=25.0,
+        ),
+        verbose=False,
+    )
+    frust = run_pipeline(
+        PipelineConfig(
+            grid_size_x=11,
+            grid_size_y=11,
+            amplitude_sw=2.0,
+            wavelength_sw=30.0,
+            shape="frustum",
+            frustum_height=90.0,
+            frustum_base_diameter=50.0,
+            frustum_top_diameter=10.0,
+        ),
+        verbose=False,
+    )
+    assert np.allclose(flat.plane_offsets, cone.plane_offsets)
+    assert np.allclose(flat.plane_offsets, frust.plane_offsets)
+    # Same offset magnitude in local frames (orthonormal)
+    cone_travel = np.linalg.norm(cone.shape_points - cone.shape_base_points, axis=1)
+    frust_travel = np.linalg.norm(frust.shape_points - frust.shape_base_points, axis=1)
+    plane_travel = np.linalg.norm(flat.plane_offsets, axis=1)
+    assert np.allclose(cone_travel, plane_travel, atol=1e-5)
+    assert np.allclose(frust_travel, plane_travel, atol=1e-5)
+    # Tip of cone (v=1) collapses to axis
+    tip_mask = cone.shape_base_points[:, 1] >= 90.0 - 1e-9
+    assert tip_mask.any()
+    tip_r = np.linalg.norm(cone.shape_base_points[tip_mask][:, [0, 2]], axis=1)
+    assert np.allclose(tip_r, 0.0, atol=1e-6)

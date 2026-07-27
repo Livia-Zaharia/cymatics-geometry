@@ -17,6 +17,7 @@ from plotly.graph_objs import FigureWidget
 from cymatics_geometry.config import PipelineConfig
 from cymatics_geometry.grid import SOURCE_LABELS, grid_shape
 from cymatics_geometry.pipeline import PipelineResult, run_pipeline
+from cymatics_geometry.shapes import ShapeParams, shape_boundary_polyline, shape_bounds
 
 
 def _source_arrays(result: PipelineResult) -> tuple[np.ndarray, tuple[str, ...], tuple[bool, ...]]:
@@ -204,29 +205,57 @@ def show_stage_line(
     result: PipelineResult,
     *,
     line_width: float = 1.5,
-    color: str = "#9b8cff",
+    color: str = "#ffffff",
+    line_color_mode: str = "difference",
 ) -> None:
-    """Stage 5 — reconnected line geometry."""
+    """Stage 5 — reconnected line geometry on the mapped shape.
+
+    ``line_color_mode``:
+      - ``difference`` — colour by point Z (coolwarm)
+      - ``white`` — solid ``color`` (default white)
+    """
     plotter = pv.Plotter(notebook=False)
     plotter.set_background("#1a1a2e")
-    plotter.add_mesh(
-        result.line_mesh,
-        color=color,
-        line_width=line_width,
-        render_lines_as_tubes=True,
-    )
-    sources, _, active = _source_arrays(result)
+    mesh = result.line_mesh
+    mode = str(line_color_mode).lower().strip()
+    if mode == "white":
+        plotter.add_mesh(
+            mesh,
+            color=color,
+            line_width=line_width,
+            render_lines_as_tubes=True,
+        )
+    else:
+        coloured = mesh.copy(deep=True)
+        coloured["z"] = np.asarray(coloured.points, dtype=float)[:, 2]
+        plotter.add_mesh(
+            coloured,
+            scalars="z",
+            cmap="coolwarm",
+            line_width=line_width,
+            render_lines_as_tubes=True,
+            show_scalar_bar=True,
+        )
+    display_sources = np.asarray(result.shape_sources, dtype=float)
+    if len(display_sources) == 0:
+        display_sources, _, active = _source_arrays(result)
+    else:
+        _, _, active = _source_arrays(result)
     if np.any(active):
         plotter.add_points(
-            sources[np.asarray(active)],
+            display_sources[np.asarray(active)],
             color="#f59e0b",
             point_size=14,
             render_points_as_spheres=True,
         )
     plotter.add_axes()
-    plotter.add_text("Stage 5 — Reconnected line geometry", font_size=12, color="white")
-    bounds = _bounds_from_points(result.polyline)
-    target = np.mean(result.polyline, axis=0)
+    title = f"Stage 5 — {result.config.shape} lines ({mode})"
+    plotter.add_text(title, font_size=12, color="white")
+    poly = np.asarray(result.polyline, dtype=float)
+    finite = poly[np.isfinite(poly).all(axis=1)]
+    bounds_pts = finite if len(finite) else np.asarray(result.shape_points, dtype=float)
+    bounds = _bounds_from_points(bounds_pts)
+    target = np.mean(bounds_pts, axis=0) if len(bounds_pts) else np.zeros(3)
     plotter.camera_position = camera_position_from_bounds(bounds, target)
     plotter.show()
 
@@ -317,28 +346,52 @@ def save_line_screenshot(
     *,
     title: str = "Cymatics line",
     window_size: tuple[int, int] = (1300, 950),
+    line_color_mode: str = "difference",
+    color: str = "#ffffff",
 ) -> Path:
     """Render the final line mesh to a PNG screenshot."""
     plotter = pv.Plotter(off_screen=True, window_size=window_size)
     plotter.set_background("#1a1a2e")
-    plotter.add_mesh(
-        result.line_mesh,
-        color="#9b8cff",
-        line_width=2.0,
-        render_lines_as_tubes=True,
-    )
-    sources, _, active = _source_arrays(result)
+    mesh = result.line_mesh
+    mode = str(line_color_mode).lower().strip()
+    if mode == "white":
+        plotter.add_mesh(
+            mesh,
+            color=color,
+            line_width=2.0,
+            render_lines_as_tubes=True,
+        )
+    else:
+        coloured = mesh.copy(deep=True)
+        coloured["z"] = np.asarray(coloured.points, dtype=float)[:, 2]
+        plotter.add_mesh(
+            coloured,
+            scalars="z",
+            cmap="coolwarm",
+            line_width=2.0,
+            render_lines_as_tubes=True,
+            show_scalar_bar=True,
+        )
+    display_sources = np.asarray(result.shape_sources, dtype=float)
+    if len(display_sources) == 0:
+        sources, _, active = _source_arrays(result)
+        display_sources = sources
+    else:
+        _, _, active = _source_arrays(result)
     if np.any(active):
         plotter.add_points(
-            sources[np.asarray(active)],
+            display_sources[np.asarray(active)],
             color="#f59e0b",
             point_size=14,
             render_points_as_spheres=True,
         )
     plotter.add_axes()
     plotter.add_text(title, position="upper_left", font_size=12, color="white")
-    bounds = _bounds_from_points(result.polyline)
-    target = np.mean(result.polyline, axis=0)
+    poly = np.asarray(result.polyline, dtype=float)
+    finite = poly[np.isfinite(poly).all(axis=1)]
+    bounds_pts = finite if len(finite) else np.asarray(result.shape_points, dtype=float)
+    bounds = _bounds_from_points(bounds_pts)
+    target = np.mean(bounds_pts, axis=0) if len(bounds_pts) else np.zeros(3)
     plotter.camera_position = camera_position_from_bounds(bounds, target)
     image_path = Path(tempfile.gettempdir()) / f"{uuid4().hex}.png"
     try:
@@ -393,14 +446,34 @@ def _subsample_polyline(polyline: np.ndarray, max_vertices: int) -> np.ndarray:
     return joined
 
 
-def _plotly_xyz(points: np.ndarray) -> tuple[list[float], list[float], list[float]]:
-    """FigureWidget needs Python lists — numpy arrays crash trait sync (truthiness)."""
+def _plotly_json_float(value: float) -> float | None:
+    """JSON-safe float for FigureWidget / jupyter-client (NaN/Inf → None)."""
+    v = float(value)
+    if not np.isfinite(v):
+        return None
+    return v
+
+
+def _plotly_xyz(points: np.ndarray) -> tuple[list[float | None], list[float | None], list[float | None]]:
+    """FigureWidget XYZ lists — NaN segment breaks become None (JSON null)."""
     pts = np.asarray(points, dtype=float)
-    return pts[:, 0].tolist(), pts[:, 1].tolist(), pts[:, 2].tolist()
+    if pts.size == 0:
+        return [], [], []
+    x = [_plotly_json_float(v) for v in pts[:, 0]]
+    y = [_plotly_json_float(v) for v in pts[:, 1]]
+    z = [_plotly_json_float(v) for v in pts[:, 2]]
+    return x, y, z
 
 
-def _plotly_floats(values: np.ndarray) -> list[float]:
-    return np.asarray(values, dtype=float).reshape(-1).tolist()
+def _plotly_floats(values: np.ndarray, *, fill: float = 0.0) -> list[float]:
+    """Finite float list for Plotly scalar colors (None is invalid on line.color)."""
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    out: list[float] = []
+    fill_f = float(fill)
+    for v in arr:
+        fv = float(v)
+        out.append(fill_f if not np.isfinite(fv) else fv)
+    return out
 
 
 def _source_marker_colors(active: tuple[bool, ...] | list[bool]) -> list[str]:
@@ -426,48 +499,160 @@ def _fixed_display_scales(
     return z_lim, xy_pad, travel_max
 
 
-def _line_figure_widget(
-    polyline: np.ndarray,
-    sources: np.ndarray,
-    labels: tuple[str, ...],
-    active: tuple[bool, ...],
+def _shape_params_from_result(result: PipelineResult) -> ShapeParams:
+    cfg = result.config
+    return ShapeParams(
+        kind=str(cfg.shape).lower(),  # type: ignore[arg-type]
+        cylinder_diameter=float(cfg.cylinder_diameter),
+        cylinder_length=float(cfg.cylinder_length),
+        cone_height=float(cfg.cone_height),
+        cone_base_radius=float(cfg.cone_base_radius),
+        frustum_height=float(cfg.frustum_height),
+        frustum_base_diameter=float(cfg.frustum_base_diameter),
+        frustum_top_diameter=float(cfg.frustum_top_diameter),
+    )
+
+
+def _scene_ranges_for_shape(
+    result: PipelineResult,
     *,
-    grid_points: np.ndarray | None = None,
-    displaced_points: np.ndarray | None = None,
-    side_length: float = 100.0,
+    z_display_max: float,
+) -> tuple[list[float], list[float], list[float], dict[str, float]]:
+    """Return (x_range, y_range, z_range, aspectratio) for the current shape."""
+    z_lim = max(float(z_display_max), 1e-6)
+    travel_max = 150.0
+    kind = str(result.config.shape).lower()
+    if kind == "plane":
+        s = float(result.config.side_length)
+        xy_pad = 0.28 * s
+        return (
+            [-xy_pad, s + xy_pad],
+            [-xy_pad, s + xy_pad],
+            [-z_lim, z_lim],
+            {"x": 1.0, "y": 1.0, "z": 0.45},
+        )
+
+    params = _shape_params_from_result(result)
+    xmin, xmax, ymin, ymax, zmin, zmax = shape_bounds(
+        params, side_length=float(result.config.side_length)
+    )
+    # Room for normal / tangential wave offsets (amp maps 1:1 into local frame)
+    pad = z_lim + 0.15 * max(
+        xmax - xmin, ymax - ymin, zmax - zmin, float(result.config.side_length), 1.0
+    )
+    x_range = [xmin - pad, xmax + pad]
+    y_range = [ymin - pad, ymax + pad]
+    z_range = [zmin - pad, zmax + pad]
+    spans = [
+        max(x_range[1] - x_range[0], 1e-6),
+        max(y_range[1] - y_range[0], 1e-6),
+        max(z_range[1] - z_range[0], 1e-6),
+    ]
+    m = max(spans)
+    aspect = {"x": spans[0] / m, "y": spans[1] / m, "z": spans[2] / m}
+    _ = travel_max  # kept for callers that still read fixed travel scale
+    return x_range, y_range, z_range, aspect
+
+
+def _ghost_footprint(result: PipelineResult) -> np.ndarray:
+    """Undeformed shape outline for the dashed guide stroke."""
+    params = _shape_params_from_result(result)
+    return shape_boundary_polyline(
+        params, side_length=float(result.config.side_length), samples=72
+    )
+
+
+def _line_color_style(
+    z_values: np.ndarray,
+    *,
+    mode: str,
+    z_display_max: float,
+) -> dict:
+    """Plotly Scatter3d ``line`` kwargs for difference coloring or solid white."""
+    z_lim = max(float(z_display_max), 1e-6)
+    if mode == "white":
+        return {"width": 2, "color": "#ffffff"}
+    return {
+        "width": 2,
+        "color": _plotly_floats(z_values),
+        "colorscale": "RdBu",
+        "cmin": -z_lim,
+        "cmax": z_lim,
+        "colorbar": {
+            "title": "mapped Z",
+            "thickness": 12,
+            "len": 0.35,
+            "y": 0.72,
+        },
+    }
+
+
+def _set_line_trace_style(fig: FigureWidget, line_style: dict, *, mode: str) -> None:
+    """Apply line color mode onto scatter trace index 2."""
+    fig.data[2].line.width = line_style["width"]
+    fig.data[2].line.color = line_style["color"]
+    if mode == "white":
+        return
+    fig.data[2].line.colorscale = line_style["colorscale"]
+    fig.data[2].line.cmin = line_style["cmin"]
+    fig.data[2].line.cmax = line_style["cmax"]
+    fig.data[2].line.colorbar = line_style["colorbar"]
+
+
+def _line_figure_widget(
+    result: PipelineResult,
+    *,
     z_display_max: float = 10.0,
     max_vertices: int = 4000,
+    line_color_mode: str = "difference",
 ) -> FigureWidget:
-    """Persistent Plotly 3D scene with fixed absolute Z / color units."""
+    """Persistent Plotly 3D scene with fixed absolute color units."""
+    sources, labels, active = _source_arrays(result)
+    # Display the mapped shape (plane identity when shape=plane)
+    display_pts = np.asarray(result.shape_points, dtype=float)
+    if len(display_pts) == 0:
+        display_pts = np.asarray(result.displaced_points, dtype=float)
+    display_sources = np.asarray(result.shape_sources, dtype=float)
+    if len(display_sources) == 0:
+        display_sources = sources
+
+    polyline = np.asarray(result.polyline, dtype=float)
     line = _subsample_polyline(polyline, max_vertices)
     z = line[:, 2]
+    travel_max = 150.0
 
-    s = float(side_length)
-    z_lim, xy_pad, travel_max = _fixed_display_scales(
-        s, z_display_max=z_display_max
-    )
-    ghost_x = [0.0, s, s, 0.0, 0.0]
-    ghost_y = [0.0, 0.0, s, s, 0.0]
-    ghost_z = [0.0, 0.0, 0.0, 0.0, 0.0]
+    ghost = _ghost_footprint(result)
+    ghost_x, ghost_y, ghost_z = _plotly_xyz(ghost)
 
-    if displaced_points is not None and len(displaced_points) > 0:
-        disp = np.asarray(displaced_points, dtype=float)
-        idx = _subsample_indices(len(disp), min(1200, max_vertices))
-        cloud = disp[idx]
-        if grid_points is not None and len(grid_points) == len(disp):
-            base = np.asarray(grid_points, dtype=float)[idx]
-            travel = np.linalg.norm(cloud[:, :2] - base[:, :2], axis=1)
+    if len(display_pts) > 0:
+        idx = _subsample_indices(len(display_pts), min(1200, max_vertices))
+        cloud = display_pts[idx]
+        base = np.asarray(result.shape_base_points, dtype=float)
+        if len(base) == len(display_pts):
+            travel = np.linalg.norm(cloud - base[idx], axis=1)
         else:
-            travel = np.abs(cloud[:, 2])
+            offs = np.asarray(result.plane_offsets, dtype=float)
+            travel = (
+                np.linalg.norm(offs[idx], axis=1)
+                if len(offs) == len(display_pts)
+                else np.abs(cloud[:, 2])
+            )
     else:
         cloud = line
         travel = np.abs(z)
 
     cloud_x, cloud_y, cloud_z = _plotly_xyz(cloud)
     line_x, line_y, line_z = _plotly_xyz(line)
-    src_x, src_y, src_z = _plotly_xyz(sources)
+    src_x, src_y, src_z = _plotly_xyz(display_sources)
     travel_list = _plotly_floats(travel)
-    z_list = _plotly_floats(z)
+    line_style = _line_color_style(
+        z, mode=str(line_color_mode), z_display_max=z_display_max
+    )
+    z_lim = max(float(z_display_max), 1e-6)
+
+    x_range, y_range, z_range, aspect = _scene_ranges_for_shape(
+        result, z_display_max=z_display_max
+    )
 
     fig = FigureWidget(
         data=[
@@ -476,7 +661,7 @@ def _line_figure_widget(
                 y=ghost_y,
                 z=ghost_z,
                 mode="lines",
-                name="original footprint",
+                name="undeformed shape",
                 line={"width": 4, "color": "#64748b", "dash": "dash"},
                 hoverinfo="skip",
             ),
@@ -494,7 +679,7 @@ def _line_figure_widget(
                     "cmax": travel_max,
                     "opacity": 0.85,
                     "colorbar": {
-                        "title": "XY travel",
+                        "title": "|offset|",
                         "thickness": 12,
                         "len": 0.35,
                         "y": 0.22,
@@ -508,19 +693,7 @@ def _line_figure_widget(
                 z=line_z,
                 mode="lines",
                 name="line",
-                line={
-                    "width": 2,
-                    "color": z_list,
-                    "colorscale": "RdBu",
-                    "cmin": -z_lim,
-                    "cmax": z_lim,
-                    "colorbar": {
-                        "title": "Z (fixed)",
-                        "thickness": 12,
-                        "len": 0.35,
-                        "y": 0.72,
-                    },
-                },
+                line=line_style,
                 hoverinfo="skip",
             ),
             go.Scatter3d(
@@ -536,6 +709,12 @@ def _line_figure_widget(
             ),
         ]
     )
+    kind = str(result.config.shape)
+    color_label = (
+        "white"
+        if line_color_mode == "white"
+        else f"difference ∈ [−{z_lim:g}, {z_lim:g}]"
+    )
     fig.update_layout(
         height=900,
         width=900,
@@ -543,10 +722,7 @@ def _line_figure_widget(
         paper_bgcolor="#111827",
         font={"color": "#e5e7eb", "size": 11},
         title={
-            "text": (
-                f"Fixed scale · Z ∈ [−{z_lim:g}, {z_lim:g}] "
-                "(amp maps 1:1 — low amp stays visually small)"
-            ),
+            "text": f"Shape · {kind} · lines {color_label}",
             "x": 0.02,
             "xanchor": "left",
             "font": {"size": 11},
@@ -554,29 +730,28 @@ def _line_figure_widget(
         scene={
             "xaxis": {
                 "title": "X",
-                "range": [-xy_pad, s + xy_pad],
+                "range": x_range,
                 "autorange": False,
                 "backgroundcolor": "#1f2937",
                 "gridcolor": "#374151",
             },
             "yaxis": {
                 "title": "Y",
-                "range": [-xy_pad, s + xy_pad],
+                "range": y_range,
                 "autorange": False,
                 "backgroundcolor": "#1f2937",
                 "gridcolor": "#374151",
             },
             "zaxis": {
                 "title": "Z",
-                "range": [-z_lim, z_lim],
+                "range": z_range,
                 "autorange": False,
                 "backgroundcolor": "#1f2937",
                 "gridcolor": "#374151",
             },
             "aspectmode": "manual",
-            "aspectratio": {"x": 1, "y": 1, "z": 0.45},
+            "aspectratio": aspect,
             "bgcolor": "#111827",
-            # Closer camera = denser / larger subject in the frame
             "camera": {"eye": {"x": 1.05, "y": -1.15, "z": 0.85}},
         },
         showlegend=False,
@@ -591,38 +766,58 @@ def _apply_result_to_figure(
     *,
     z_display_max: float = 10.0,
     max_vertices: int = 4000,
+    line_color_mode: str = "difference",
 ) -> None:
-    """Mutate an existing FigureWidget in place — fixed units, camera preserved."""
+    """Mutate an existing FigureWidget in place — camera preserved via uirevision."""
     line = _subsample_polyline(result.polyline, max_vertices)
     if len(line) == 0:
         line = np.full((1, 3), np.nan, dtype=float)
     z = line[:, 2]
     sources, labels, active = _source_arrays(result)
+    display_sources = np.asarray(result.shape_sources, dtype=float)
+    if len(display_sources) == 0:
+        display_sources = sources
 
-    disp = np.asarray(result.displaced_points, dtype=float)
-    grid = np.asarray(result.grid_points, dtype=float)
-    idx = _subsample_indices(len(disp), min(1200, max_vertices))
-    cloud = disp[idx]
-    base = grid[idx]
-    travel = np.linalg.norm(cloud[:, :2] - base[:, :2], axis=1)
+    display_pts = np.asarray(result.shape_points, dtype=float)
+    if len(display_pts) == 0:
+        display_pts = np.asarray(result.displaced_points, dtype=float)
+    base = np.asarray(result.shape_base_points, dtype=float)
+    idx = _subsample_indices(len(display_pts), min(1200, max_vertices))
+    cloud = display_pts[idx]
+    if len(base) == len(display_pts):
+        travel = np.linalg.norm(cloud - base[idx], axis=1)
+    else:
+        travel = np.abs(cloud[:, 2])
 
-    s = float(result.config.side_length)
-    z_lim, xy_pad, travel_max = _fixed_display_scales(
-        s, z_display_max=z_display_max
-    )
+    z_lim = max(float(z_display_max), 1e-6)
+    travel_max = 150.0
     lx = "X" if result.config.lines_x else ""
     ly = "Y" if result.config.lines_y else ""
     dirs = f"{lx}+{ly}".strip("+") or "none"
+    kind = str(result.config.shape)
+    line_style = _line_color_style(
+        z, mode=str(line_color_mode), z_display_max=z_display_max
+    )
 
+    ghost = _ghost_footprint(result)
+    ghost_x, ghost_y, ghost_z = _plotly_xyz(ghost)
     cloud_x, cloud_y, cloud_z = _plotly_xyz(cloud)
     line_x, line_y, line_z = _plotly_xyz(line)
-    src_x, src_y, src_z = _plotly_xyz(sources)
+    src_x, src_y, src_z = _plotly_xyz(display_sources)
+    x_range, y_range, z_range, aspect = _scene_ranges_for_shape(
+        result, z_display_max=z_display_max
+    )
+    color_label = (
+        "white"
+        if line_color_mode == "white"
+        else f"difference ∈ [−{z_lim:g}, {z_lim:g}]"
+    )
 
     with fig.batch_update():
-        # 0 = original XY footprint, 1 = points, 2 = line, 3 = sources
-        fig.data[0].x = [0.0, s, s, 0.0, 0.0]
-        fig.data[0].y = [0.0, 0.0, s, s, 0.0]
-        fig.data[0].z = [0.0, 0.0, 0.0, 0.0, 0.0]
+        # 0 = undeformed outline, 1 = points, 2 = line, 3 = sources
+        fig.data[0].x = ghost_x
+        fig.data[0].y = ghost_y
+        fig.data[0].z = ghost_z
         fig.data[1].x = cloud_x
         fig.data[1].y = cloud_y
         fig.data[1].z = cloud_z
@@ -632,19 +827,18 @@ def _apply_result_to_figure(
         fig.data[2].x = line_x
         fig.data[2].y = line_y
         fig.data[2].z = line_z
-        fig.data[2].line.color = _plotly_floats(z)
-        fig.data[2].line.cmin = -z_lim
-        fig.data[2].line.cmax = z_lim
+        _set_line_trace_style(fig, line_style, mode=str(line_color_mode))
         fig.data[3].x = src_x
         fig.data[3].y = src_y
         fig.data[3].z = src_z
         fig.data[3].text = list(labels)
         fig.data[3].marker.color = _source_marker_colors(active)
-        fig.layout.scene.xaxis.range = [-xy_pad, s + xy_pad]
-        fig.layout.scene.yaxis.range = [-xy_pad, s + xy_pad]
-        fig.layout.scene.zaxis.range = [-z_lim, z_lim]
+        fig.layout.scene.xaxis.range = x_range
+        fig.layout.scene.yaxis.range = y_range
+        fig.layout.scene.zaxis.range = z_range
+        fig.layout.scene.aspectratio = aspect
         fig.layout.title.text = (
-            f"Grid lines {dirs} · Z ∈ [−{z_lim:g}, {z_lim:g}]"
+            f"Shape · {kind} · grid {dirs} · lines {color_label}"
         )
 
 
@@ -671,6 +865,7 @@ def show_interactive_line_viewer(
     from ipywidgets import (
         Button,
         Checkbox,
+        Dropdown,
         FloatSlider,
         HTML,
         HBox,
@@ -829,7 +1024,116 @@ def show_interactive_line_viewer(
         indent=False,
         layout=Layout(width="160px"),
     )
+    line_color_dd = Dropdown(
+        options=[
+            ("difference (by Z)", "difference"),
+            ("uniform white", "white"),
+        ],
+        value="difference",
+        description="line color",
+        style=global_style,
+        layout=Layout(width="96%"),
+    )
+    shape_dd = Dropdown(
+        options=[
+            ("plane", "plane"),
+            ("cylinder", "cylinder"),
+            ("cone", "cone"),
+            ("frustum (truncated cone)", "frustum"),
+        ],
+        value=str(getattr(base, "shape", "plane") or "plane"),
+        description="shape",
+        style=global_style,
+        layout=Layout(width="96%"),
+    )
+    cyl_diam = FloatSlider(
+        value=float(base.cylinder_diameter),
+        min=5.0,
+        max=120.0,
+        step=1.0,
+        description="cyl Ø",
+        readout_format=".0f",
+        style=global_style,
+        layout=full_slider,
+    )
+    cyl_len = FloatSlider(
+        value=float(base.cylinder_length),
+        min=10.0,
+        max=200.0,
+        step=1.0,
+        description="cyl len",
+        readout_format=".0f",
+        style=global_style,
+        layout=full_slider,
+    )
+    cone_h = FloatSlider(
+        value=float(base.cone_height),
+        min=10.0,
+        max=200.0,
+        step=1.0,
+        description="cone H",
+        readout_format=".0f",
+        style=global_style,
+        layout=full_slider,
+    )
+    cone_r = FloatSlider(
+        value=float(base.cone_base_radius),
+        min=1.0,
+        max=80.0,
+        step=0.5,
+        description="cone R",
+        readout_format=".1f",
+        style=global_style,
+        layout=full_slider,
+    )
+    fr_h = FloatSlider(
+        value=float(base.frustum_height),
+        min=10.0,
+        max=200.0,
+        step=1.0,
+        description="frust H",
+        readout_format=".0f",
+        style=global_style,
+        layout=full_slider,
+    )
+    fr_base = FloatSlider(
+        value=float(base.frustum_base_diameter),
+        min=1.0,
+        max=160.0,
+        step=1.0,
+        description="base Ø",
+        readout_format=".0f",
+        style=global_style,
+        layout=full_slider,
+    )
+    fr_top = FloatSlider(
+        value=float(base.frustum_top_diameter),
+        min=0.0,
+        max=160.0,
+        step=1.0,
+        description="top Ø",
+        readout_format=".0f",
+        style=global_style,
+        layout=full_slider,
+    )
+    shape_param_box = VBox(
+        [],
+        layout=Layout(width="100%", margin="0 0 6px 0"),
+    )
     status = HTML(value="", layout=Layout(width="98%"))
+
+    def _sync_shape_param_visibility(_change: object | None = None) -> None:
+        kind = str(shape_dd.value)
+        if kind == "cylinder":
+            shape_param_box.children = (cyl_diam, cyl_len)
+        elif kind == "cone":
+            shape_param_box.children = (cone_h, cone_r)
+        elif kind == "frustum":
+            shape_param_box.children = (fr_h, fr_base, fr_top)
+        else:
+            shape_param_box.children = ()
+
+    _sync_shape_param_visibility()
 
     _loading = {"on": False}
 
@@ -869,6 +1173,14 @@ def show_interactive_line_viewer(
             "line_pattern": "grid",
             "lines_x": bool(lines_x_cb.value),
             "lines_y": bool(lines_y_cb.value),
+            "shape": str(shape_dd.value),
+            "cylinder_diameter": float(cyl_diam.value),
+            "cylinder_length": float(cyl_len.value),
+            "cone_height": float(cone_h.value),
+            "cone_base_radius": float(cone_r.value),
+            "frustum_height": float(fr_h.value),
+            "frustum_base_diameter": float(fr_base.value),
+            "frustum_top_diameter": float(fr_top.value),
         }
         for key, w in source_widgets.items():
             kwargs[f"active_{key}"] = True
@@ -884,24 +1196,19 @@ def show_interactive_line_viewer(
         dirs = f"{lx}+{ly}".strip("+") or "none"
         return (
             "<div style='font-size:11px;color:#4b5563;margin-top:6px'>"
-            f"lines=<b>{dirs}</b> · engaged={live.stats['active_labels']} · "
+            f"shape=<b>{live.config.shape}</b> · lines=<b>{dirs}</b> · "
+            f"engaged={live.stats['active_labels']} · "
             f"z∈[{live.stats['displacement_min']:.2f}, {live.stats['displacement_max']:.2f}] · "
             f"XY max={live.stats.get('xy_offset_max', 0.0):.1f}"
             "</div>"
         )
 
     initial = run_pipeline(_config_from_state(), verbose=False)
-    sources, labels, active = _source_arrays(initial)
     fig = _line_figure_widget(
-        initial.polyline,
-        sources,
-        labels,
-        active,
-        grid_points=initial.grid_points,
-        displaced_points=initial.displaced_points,
-        side_length=float(initial.config.side_length),
+        initial,
         z_display_max=float(amplitude_max),
         max_vertices=max_vertices,
+        line_color_mode=str(line_color_dd.value),
     )
     status.value = _status_text(initial)
 
@@ -914,6 +1221,7 @@ def show_interactive_line_viewer(
             live,
             z_display_max=float(amplitude_max),
             max_vertices=max_vertices,
+            line_color_mode=str(line_color_dd.value),
         )
         status.value = _status_text(live)
 
@@ -986,8 +1294,26 @@ def show_interactive_line_viewer(
         for sl in (w["amp"], w["wavelength"], w["release"]):
             sl.observe(_on_source_slider, names="value")
 
-    for w in (time_sl, decay_sl, cloth_sl, grid_x, grid_y, lines_x_cb, lines_y_cb):
+    for w in (
+        time_sl,
+        decay_sl,
+        cloth_sl,
+        grid_x,
+        grid_y,
+        lines_x_cb,
+        lines_y_cb,
+        line_color_dd,
+        shape_dd,
+        cyl_diam,
+        cyl_len,
+        cone_h,
+        cone_r,
+        fr_h,
+        fr_base,
+        fr_top,
+    ):
         w.observe(_rerun, names="value")
+    shape_dd.observe(_sync_shape_param_visibility, names="value")
 
     source_blocks = [source_widgets[label.lower()]["block"] for label in SOURCE_LABELS]
     controls = VBox(
@@ -1000,7 +1326,23 @@ def show_interactive_line_viewer(
                 ".cym-panel .widget-readout { font-size: 12px !important; }"
                 ".cym-panel .widget-box { overflow: visible !important; }"
                 "</style>"
-                "<div style='font-size:13px;margin:0 0 10px 0'>"
+                "<div style='font-size:13px;margin:0 0 6px 0'><b>Display</b></div>"
+            ),
+            line_color_dd,
+            HBox(
+                [lines_x_cb, lines_y_cb],
+                layout=Layout(width="100%", margin="4px 0 8px 0"),
+            ),
+            HTML(
+                "<div style='font-size:13px;margin:10px 0 4px 0'><b>Shape map</b> "
+                "<span style='color:#6b7280;font-size:11px'>"
+                "waves on plane → same UV + local offsets on target"
+                "</span></div>"
+            ),
+            shape_dd,
+            shape_param_box,
+            HTML(
+                "<div style='font-size:13px;margin:14px 0 10px 0'>"
                 "<b>Sources</b> "
                 "<span style='color:#6b7280;font-size:11px'>"
                 "— titled blocks · values on the right · sync to mirror"
@@ -1026,17 +1368,6 @@ def show_interactive_line_viewer(
             cloth_sl,
             grid_x,
             grid_y,
-            HTML(
-                "<div style='font-size:12px;margin:8px 0 4px 0'>"
-                "<b>Grid lines</b> "
-                "<span style='color:#6b7280;font-size:11px'>"
-                "uncheck to hide that direction"
-                "</span></div>"
-            ),
-            HBox(
-                [lines_x_cb, lines_y_cb],
-                layout=Layout(width="100%"),
-            ),
             status,
         ],
         layout=Layout(
