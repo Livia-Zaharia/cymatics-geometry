@@ -1,8 +1,10 @@
 # cymatics-geometry
 
-Plane-of-points geometry displaced by **multi-source cymatics wave interference**, optionally **mapped onto cylinder / cone / frustum**, then reconnected into **parallel U/V grid lines**.
+Plane-of-points geometry displaced by **multi-source cymatics wave interference**, optionally **mapped onto cylinder / cone / frustum**, then reconnected into **parallel U/V grid lines**, and optionally **piped into 3D-printable voxel solids (STL)**.
 
 Built in the same spirit as [`enhancement-geometry`](https://github.com/Livia-Zaharia/enhancement-geometry) (the Voronoi / lofted-cylinder library used by [Materialized Enhancements](https://github.com/Livia-Zaharia/materialized-enchancements)): typed `PipelineConfig`, staged `run_pipeline`, PyVista visualization, Typer CLI, and a Jupyter notebook for debugging.
+
+Voxel solids use **[PicoPie](https://github.com/inventhq/PicoPie)** — Python bindings for LEAP 71’s PicoGK OpenVDB kernel — so pipes can carry **surface modulations** (radius ripples / angular lobes) along each curve spine.
 
 Author: **Livia Zaharia**
 
@@ -16,6 +18,7 @@ Author: **Livia Zaharia**
 4. Move points in **Z** by wave interference; **release** applies a radial **XY** shockwave with optional **cloth** springs
 5. **Map** the same UV lattice + local offsets onto a target shape (`plane` / `cylinder` / `cone` / `frustum`)
 6. Reconnect as **parallel U-row and V-column lines** (either direction can be turned off)
+7. **Voxel pipe** (optional) — cubic-spline-smooth each line spine, then sweep solid rods / hollow pipes with PicoPie voxels, modulate the radius, mesh, export **STL**
 
 Waves always compute on the flat plane. Mapping reuses the plane-frame offset `δ = (dx, dy, dz)` in the target surface’s local frame `(Tu, Tv, N)`:
 
@@ -60,6 +63,52 @@ show_all_stages_matplotlib(result)
 export_line_obj(result, "exports")
 ```
 
+### Voxel pipe → STL
+
+```python
+from cymatics_geometry import (
+    PipelineConfig,
+    run_pipeline,
+    VoxelPipeConfig,
+    pipe_and_export_stl,
+    save_model_params,
+)
+
+pipe = PipelineConfig(
+    grid_size_x=40,
+    grid_size_y=40,
+    amplitude_sw=1.0,
+    amplitude_se=0.85,
+    wavelength_sw=25.0,
+    wavelength_se=25.0,
+    shape="cylinder",
+    cylinder_diameter=40.0,
+    cylinder_length=100.0,
+    lines_x=True,
+    lines_y=True,
+)
+result = run_pipeline(pipe)
+voxel = VoxelPipeConfig(
+    voxel_size=0.6,       # smaller → smoother / slower
+    pipe_radius=1.2,      # outer tube radius
+    inner_radius=0.0,     # 0 = solid rod; >0 = hollow pipe
+    modulation_amp=0.25,  # surface ripple strength
+    modulation_freq=3.0,  # ripples along each line
+    modulation_lobes=6,   # angular flutes (0 = none)
+    line_stride=2,        # every N-th grid line
+    point_stride=2,       # every N-th sample on a line
+    spine_samples=40,     # cubic-spline samples along each bend
+)
+
+solid, path = pipe_and_export_stl(result, "exports", voxel)
+print(path, solid.volume, solid.is_watertight)
+
+# Snapshot pipeline + nested voxel settings (same JSON as notebook / `cymatics stl --save-config`)
+save_model_params(pipe, voxel, "configs")
+```
+
+Spines are **cubic-spline** resampled to `spine_samples` after line/point stride (linear fallback when a segment has fewer than 4 distinct points). That applies to both `preview_pipe_mesh` and `pipe_lines_to_voxels` / STL.
+
 ---
 
 ## Jupyter notebook
@@ -72,8 +121,10 @@ Interactive Plotly viewer (right panel, top → bottom):
 
 - **Display** — `line color` (`difference` / `uniform white`) + X/Y line toggles
 - **Shape map** — plane / cylinder / cone / frustum + shape params
-- **Sources** — per-source amp / λ / release (+ sync)
+- **Sources** — per-source amp / λ / release (+ sync checkboxes)
+- **Mirroring** — `corners` / `mids` / `all` / `clear`: copies amp·λ·release from the first selected source (order SW→…→W). Sources **not** in the new selection reset to **0**; `clear` zeros everything
 - **Global** — time, decay, cloth, grid resolution
+- **Voxel print** — pipe / voxel / modulation / stride controls + **Preview solid** (opaque shaded tubes, wireframe hidden) / **Export STL** / **Save params** (writes pipeline + nested `voxel` JSON under `configs/`)
 
 Re-run the import cell after pulling library changes so the notebook picks up `src/`.
 
@@ -190,7 +241,37 @@ uv run cymatics show-config configs/<timestamp>.json
 uv run cymatics generate -c configs/<timestamp>.json --line-color white --screenshot exports/from_config.png
 ```
 
-Exports land in `exports/` as `.obj` / `.ply`. Config snapshots land in `configs/`.
+Exports land in `exports/` as `.obj` / `.ply` (and `.stl` from the voxel command). Config snapshots land in `configs/`.
+
+- `cymatics generate --save-config` writes **pipeline-only** JSON (`save_pipeline_config`)
+- Notebook **Save params** / `cymatics stl --save-config` write **pipeline + nested `voxel`** JSON (`save_model_params`)
+- `load_pipeline_config` ignores unknown keys (including `voxel`); use `load_voxel_params` / `VoxelPipeConfig.from_dict` for the nested block
+
+### Voxel STL (printable pipes along the lines)
+
+```bash
+uv run cymatics stl \
+  --grid-x 40 --grid-y 40 \
+  --amp-sw 1.0 --amp-se 0.85 --amp-ne 0.55 --amp-nw 0.9 \
+  --wavelength 25 \
+  --shape cylinder \
+  --cylinder-diameter 40 --cylinder-length 100 \
+  --voxel-size 0.6 \
+  --pipe-radius 1.2 \
+  --mod-amp 0.25 --mod-freq 3 --mod-lobes 6 \
+  --line-stride 2 \
+  --spine-samples 40 \
+  --export-dir exports \
+  --save-config
+```
+
+Or reuse a saved model-params file (pipeline + nested voxel from notebook / previous `stl` run). When the JSON has a `voxel` object, those settings are used; CLI voxel flags apply when there is no nested block:
+
+```bash
+uv run cymatics stl -c configs/<timestamp>.json --export-dir exports
+# pipeline-only JSON, set voxel on the CLI:
+uv run cymatics stl -c configs/<pipeline-only>.json --voxel-size 0.5 --pipe-radius 1.0
+```
 
 ### Useful flags
 
@@ -208,7 +289,32 @@ Exports land in `exports/` as `.obj` / `.ply`. Config snapshots land in `configs
 | `--release-sw` | SW radial XY release 0–150 |
 | `--viewer` / `--no-viewer` | PyVista window |
 | `--screenshot PATH` | PNG preview |
-| `-c` / `--config` | load `PipelineConfig` JSON |
+| `-c` / `--config` | load pipeline JSON (and nested `voxel` for `stl` when present) |
+| `--save-config` / `--no-save-config` | snapshot used settings (`generate` → pipeline; `stl` → pipeline+voxel) |
+| `cymatics stl` | pipe lines → cubic-spline spines → PicoPie voxels → STL |
+| `--voxel-size` | OpenVDB cell size (smoothness vs speed) |
+| `--pipe-radius` / `--inner-radius` | outer / hollow bore |
+| `--mod-amp` / `--mod-freq` / `--mod-lobes` | surface modulation |
+| `--line-stride` / `--point-stride` | thin the lattice for faster builds |
+| `--spine-samples` | cubic-spline samples along each bend |
+
+---
+
+## Voxel parameters (practical)
+
+| Parameter | What it does in practice |
+|-----------|--------------------------|
+| `voxel_size` | Edge length of one voxel. Smaller → smoother surface and sharper modulation, but slower and heavier STL. Preview at ~0.6–1.2; print at ~0.2–0.5. |
+| `pipe_radius` | Outer radius of the tube swept along each line. Keep thick enough for your nozzle / wall after unit scaling. |
+| `inner_radius` | Hollow bore. `0` = solid rod (strongest / fastest). Must stay below `pipe_radius`; wall ≈ outer − inner should be ≥ ~2× `voxel_size`. |
+| `modulation_amp` | How far the outer radius ripples in/out (world units). `0` = smooth constant tube. |
+| `modulation_freq` | Number of full radius waves along each line’s length. |
+| `modulation_lobes` | Angular flutes around the circumference (`0` = round; `6` ≈ hexagonal ripple). |
+| `line_stride` | Keep every N-th grid line. `1` = dense lattice; `2+` = lighter / faster. |
+| `point_stride` | Keep every N-th sample along a polyline before building the spine. |
+| `spine_samples` | Cubic-spline arc-length samples for each spine (preview + PicoPie). Higher → smoother bends; cost grows with samples × lines. |
+
+Library entry points: `VoxelPipeConfig`, `VoxelPipeConfig.from_dict`, `pipe_lines_to_voxels`, `export_stl`, `pipe_and_export_stl` in `cymatics_geometry.voxels`; `save_model_params` / `load_voxel_params` in `cymatics_geometry.config` (also re-exported from the package root).
 
 ---
 
@@ -222,6 +328,7 @@ Exports land in `exports/` as `.obj` / `.ply`. Config snapshots land in `configs
 | 4 | Points displaced on the plane |
 | 4b | Same UV + offsets mapped onto the target shape |
 | 5 | Points reconnected as grid lines on the shape |
+| 6 | (optional) Lines cubic-spline smoothed → voxel pipes → STL |
 
 ---
 
@@ -232,11 +339,12 @@ cymatics-geometry/
 ├── configs/
 ├── notebooks/cymatics_plane_line.ipynb
 ├── src/cymatics_geometry/
-│   ├── config.py          # PipelineConfig + JSON I/O
+│   ├── config.py          # PipelineConfig + save/load model params JSON
 │   ├── grid.py            # square grid + source positions
 │   ├── waves.py           # multi-source interference + release/cloth
 │   ├── shapes.py          # plane → cylinder/cone/frustum mapping
 │   ├── lines.py           # grid U/V parallel lines
+│   ├── voxels.py          # spline spines + PicoPie pipe / STL
 │   ├── pipeline.py        # run_pipeline + exports
 │   ├── visualization.py   # notebook + PyVista viewers
 │   └── cli.py             # typer CLI (`cymatics`)
@@ -251,7 +359,7 @@ cymatics-geometry/
 |--|--|--|
 | Base form | stacked circles → lofted half-cylinder | flat square point plane → optional cylinder/cone/frustum |
 | Field | Voronoi cells on lofted surface | circular waves from up to 8 sources |
-| Output | watertight printable shell (STL) | continuous line geometry (OBJ/PLY) |
-| Controls | radii, spacing, seed, extrusion | amps, λ, release, cloth, shape params |
+| Output | watertight printable shell (STL) | lines (OBJ/PLY) **and** voxel-piped solids (STL) |
+| Controls | radii, spacing, seed, extrusion | amps, λ, release, cloth, shape params, voxel pipe |
 
-Same engineering habits: frozen config dataclass, staged pipeline result, notebook + CLI parity, PyVista for 3D previews.
+Same engineering habits: frozen config dataclass, staged pipeline result, notebook + CLI parity, timestamped STL export via trimesh, PyVista / Plotly for 3D previews.

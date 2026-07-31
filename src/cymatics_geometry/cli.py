@@ -256,6 +256,222 @@ def generate(
         show_stage_line(result, line_color_mode=color_mode)
 
 
+@app.command()
+def stl(
+    config: Annotated[
+        Optional[Path],
+        typer.Option("--config", "-c", help="Path to a saved pipeline config JSON file."),
+    ] = None,
+    grid_size: Annotated[
+        int,
+        typer.Option("--grid-size", "-n", help="Square grid shortcut (X and Y)."),
+    ] = 40,
+    grid_size_x: Annotated[
+        Optional[int],
+        typer.Option("--grid-x", help="Point count along X."),
+    ] = None,
+    grid_size_y: Annotated[
+        Optional[int],
+        typer.Option("--grid-y", help="Point count along Y."),
+    ] = None,
+    amp_sw: Annotated[float, typer.Option("--amp-sw", help="SW corner amplitude.")] = 1.0,
+    amp_se: Annotated[float, typer.Option("--amp-se", help="SE corner amplitude.")] = 0.85,
+    amp_ne: Annotated[float, typer.Option("--amp-ne", help="NE corner amplitude.")] = 0.55,
+    amp_nw: Annotated[float, typer.Option("--amp-nw", help="NW corner amplitude.")] = 0.9,
+    wavelength: Annotated[
+        float,
+        typer.Option("--wavelength", "-l", help="Wave length for active corner sources."),
+    ] = 25.0,
+    shape: Annotated[
+        str,
+        typer.Option("--shape", help="Target surface: plane|cylinder|cone|frustum."),
+    ] = "plane",
+    cylinder_diameter: Annotated[
+        float,
+        typer.Option("--cylinder-diameter", help="Cylinder diameter (shape=cylinder)."),
+    ] = 40.0,
+    cylinder_length: Annotated[
+        float,
+        typer.Option("--cylinder-length", help="Cylinder length (shape=cylinder)."),
+    ] = 100.0,
+    cone_height: Annotated[
+        float,
+        typer.Option("--cone-height", help="Cone height (shape=cone)."),
+    ] = 100.0,
+    cone_base_radius: Annotated[
+        float,
+        typer.Option("--cone-base-radius", help="Cone base radius (shape=cone)."),
+    ] = 30.0,
+    frustum_height: Annotated[
+        float,
+        typer.Option("--frustum-height", help="Frustum height (shape=frustum)."),
+    ] = 100.0,
+    frustum_base_diameter: Annotated[
+        float,
+        typer.Option("--frustum-base-diameter", help="Frustum base diameter."),
+    ] = 60.0,
+    frustum_top_diameter: Annotated[
+        float,
+        typer.Option("--frustum-top-diameter", help="Frustum top diameter."),
+    ] = 20.0,
+    lines_x: Annotated[
+        bool,
+        typer.Option("--lines-x/--no-lines-x", help="Include X/U-parallel grid lines."),
+    ] = True,
+    lines_y: Annotated[
+        bool,
+        typer.Option("--lines-y/--no-lines-y", help="Include Y/V-parallel grid lines."),
+    ] = True,
+    voxel_size: Annotated[
+        float,
+        typer.Option(
+            "--voxel-size",
+            help="Voxel edge length (smaller = smoother/slower).",
+        ),
+    ] = 0.8,
+    pipe_radius: Annotated[
+        float,
+        typer.Option("--pipe-radius", help="Outer tube radius along each line."),
+    ] = 1.2,
+    inner_radius: Annotated[
+        float,
+        typer.Option("--inner-radius", help="Hollow bore (0 = solid rod)."),
+    ] = 0.0,
+    modulation_amp: Annotated[
+        float,
+        typer.Option("--mod-amp", help="Surface ripple amplitude (voxel modulation)."),
+    ] = 0.0,
+    modulation_freq: Annotated[
+        float,
+        typer.Option("--mod-freq", help="Ripples along each pipe length."),
+    ] = 2.0,
+    modulation_lobes: Annotated[
+        int,
+        typer.Option("--mod-lobes", help="Angular flutes around the tube (0 = none)."),
+    ] = 0,
+    line_stride: Annotated[
+        int,
+        typer.Option("--line-stride", help="Keep every N-th grid line."),
+    ] = 2,
+    point_stride: Annotated[
+        int,
+        typer.Option("--point-stride", help="Keep every N-th sample along each line."),
+    ] = 2,
+    spine_samples: Annotated[
+        int,
+        typer.Option(
+            "--spine-samples",
+            help="Cubic-spline arc-length samples per spine.",
+        ),
+    ] = 40,
+    export_dir: Annotated[
+        Path,
+        typer.Option("--export-dir", "-o", help="Directory for the STL file."),
+    ] = Path("exports"),
+    configs_dir: Annotated[
+        Path,
+        typer.Option("--configs-dir", help="Directory for saving model-param snapshots."),
+    ] = Path("configs"),
+    save_config: Annotated[
+        bool,
+        typer.Option(
+            "--save-config/--no-save-config",
+            help="Save pipeline + voxel params JSON (same format as notebook Save params).",
+        ),
+    ] = True,
+    quiet: Annotated[
+        bool,
+        typer.Option("--quiet", "-q", help="Suppress progress output."),
+    ] = False,
+) -> None:
+    """Pipe grid lines into a PicoPie voxel solid and export STL."""
+    from cymatics_geometry.config import (
+        PipelineConfig,
+        load_pipeline_config,
+        load_voxel_params,
+        save_model_params,
+    )
+    from cymatics_geometry.pipeline import run_pipeline
+    from cymatics_geometry.shapes import SHAPE_KINDS
+    from cymatics_geometry.voxels import VoxelPipeConfig, pipe_and_export_stl
+
+    shape_kind = str(shape).lower().strip()
+    if shape_kind not in SHAPE_KINDS:
+        typer.echo(f"--shape must be one of: {', '.join(SHAPE_KINDS)}", err=True)
+        raise typer.Exit(1)
+
+    voxel_from_file: dict[str, object] | None = None
+    if config is not None:
+        if not config.exists():
+            typer.echo(f"Config file not found: {config}", err=True)
+            raise typer.Exit(1)
+        pipeline_config = load_pipeline_config(config)
+        voxel_from_file = load_voxel_params(config)
+        if not quiet:
+            typer.echo(f"Loaded config from {config}")
+            if voxel_from_file is not None:
+                typer.echo("Using nested voxel params from config JSON")
+    else:
+        nx = grid_size if grid_size_x is None else grid_size_x
+        ny = grid_size if grid_size_y is None else grid_size_y
+        pipeline_config = PipelineConfig(
+            grid_size_x=nx,
+            grid_size_y=ny,
+            amplitude_sw=amp_sw,
+            amplitude_se=amp_se,
+            amplitude_ne=amp_ne,
+            amplitude_nw=amp_nw,
+            wavelength=wavelength,
+            wavelength_sw=wavelength,
+            wavelength_se=wavelength,
+            wavelength_ne=wavelength,
+            wavelength_nw=wavelength,
+            line_pattern="grid",
+            lines_x=lines_x,
+            lines_y=lines_y,
+            shape=shape_kind,
+            cylinder_diameter=cylinder_diameter,
+            cylinder_length=cylinder_length,
+            cone_height=cone_height,
+            cone_base_radius=cone_base_radius,
+            frustum_height=frustum_height,
+            frustum_base_diameter=frustum_base_diameter,
+            frustum_top_diameter=frustum_top_diameter,
+        )
+
+    if not quiet:
+        typer.echo("Running cymatics pipeline, then voxel-piping lines…")
+
+    result = run_pipeline(pipeline_config, verbose=not quiet)
+    if voxel_from_file is not None:
+        vcfg = VoxelPipeConfig.from_dict(voxel_from_file)
+    else:
+        vcfg = VoxelPipeConfig(
+            voxel_size=voxel_size,
+            pipe_radius=pipe_radius,
+            inner_radius=inner_radius,
+            modulation_amp=modulation_amp,
+            modulation_freq=modulation_freq,
+            modulation_lobes=modulation_lobes,
+            line_stride=line_stride,
+            point_stride=point_stride,
+            spine_samples=spine_samples,
+        )
+    solid, path = pipe_and_export_stl(result, export_dir, vcfg, verbose=not quiet)
+    typer.echo(f"STL exported: {path}")
+    typer.echo(
+        f"faces={solid.stats['faces']}  volume~={solid.volume:.2f}  "
+        f"watertight={solid.is_watertight}"
+    )
+
+    if save_config:
+        saved = save_model_params(pipeline_config, vcfg, configs_dir)
+        if saved is not None:
+            typer.echo(f"Model params saved: {saved}")
+        elif not quiet:
+            typer.echo("Model params identical to existing, not saved.")
+
+
 @app.command(name="show-config")
 def show_config(
     path: Annotated[Path, typer.Argument(help="Path to a config JSON file to display.")],

@@ -10,6 +10,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pyvista as pv
@@ -255,4 +256,29 @@ def export_line_ply(result: PipelineResult, export_dir: str | Path, *, suffix: s
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     path = export_dir / f"cymatics_line_{ts}{suffix}.ply"
     result.line_mesh.save(str(path))
+    return path
+
+
+def export_pipe_stl(
+    result: PipelineResult,
+    export_dir: str | Path,
+    *,
+    voxel_config: Any | None = None,
+    suffix: str = "",
+    verbose: bool = True,
+) -> Path:
+    """Pipe stage-5 lines into a voxel solid and write a timestamped STL.
+
+    Thin wrapper around :func:`cymatics_geometry.voxels.pipe_and_export_stl`
+    (same export style as enhancement-geometry's ``export_stl``).
+    """
+    from cymatics_geometry.voxels import pipe_and_export_stl
+
+    _solid, path = pipe_and_export_stl(
+        result,
+        export_dir,
+        voxel_config,
+        suffix=suffix,
+        verbose=verbose,
+    )
     return path

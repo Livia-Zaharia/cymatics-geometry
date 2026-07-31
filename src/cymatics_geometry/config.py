@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import asdict, dataclass, fields, replace
+from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Mapping
 
 # Keep in sync with cymatics_geometry.grid.SOURCE_LABELS
 _SOURCE_LABELS: tuple[str, ...] = ("SW", "SE", "NE", "NW", "S", "E", "N", "W")
@@ -317,6 +318,51 @@ def save_pipeline_config(
     path = configs_dir / f"{ts}.json"
     path.write_text(json.dumps(cfg_data, indent=2), encoding="utf-8")
     return path
+
+
+def save_model_params(
+    pipeline: PipelineConfig,
+    voxel: Mapping[str, Any] | object,
+    configs_dir: str | Path,
+    *,
+    allow_duplicates: bool = False,
+) -> Path | None:
+    """Save pipeline + voxel pipe settings as one JSON under configs_dir.
+
+    Payload is pipeline fields plus a nested ``\"voxel\"`` object. Duplicate
+    payloads are skipped unless ``allow_duplicates`` is True.
+    """
+    configs_dir = Path(configs_dir)
+    configs_dir.mkdir(parents=True, exist_ok=True)
+
+    if is_dataclass(voxel) and not isinstance(voxel, type):
+        voxel_data: dict[str, Any] = asdict(voxel)
+    elif isinstance(voxel, Mapping):
+        voxel_data = dict(voxel)
+    else:
+        raise TypeError("voxel must be a mapping or dataclass instance")
+
+    payload: dict[str, Any] = {**pipeline.to_dict(), "voxel": voxel_data}
+
+    if not allow_duplicates:
+        for existing_path in sorted(configs_dir.glob("*.json"), reverse=True):
+            existing_data = json.loads(existing_path.read_text(encoding="utf-8"))
+            if existing_data == payload:
+                return None
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = configs_dir / f"{ts}.json"
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return path
+
+
+def load_voxel_params(path: str | Path) -> dict[str, Any] | None:
+    """Return the nested ``voxel`` object from a model-params JSON, if present."""
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    voxel = raw.get("voxel")
+    if not isinstance(voxel, Mapping):
+        return None
+    return dict(voxel)
 
 
 def list_saved_configs(configs_dir: str | Path) -> list[str]:

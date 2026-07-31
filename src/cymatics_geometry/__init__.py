@@ -4,6 +4,8 @@ from cymatics_geometry.config import (
     PipelineConfig,
     list_saved_configs,
     load_pipeline_config,
+    load_voxel_params,
+    save_model_params,
     save_pipeline_config,
 )
 
@@ -12,11 +14,18 @@ __version__ = "0.1.0"
 __all__ = [
     "PipelineConfig",
     "PipelineResult",
+    "VoxelPipeConfig",
+    "VoxelPipeResult",
     "export_line_obj",
     "export_line_ply",
+    "export_stl",
     "list_saved_configs",
     "load_pipeline_config",
+    "load_voxel_params",
+    "pipe_and_export_stl",
+    "pipe_lines_to_voxels",
     "run_pipeline",
+    "save_model_params",
     "save_pipeline_config",
 ]
 
@@ -27,4 +36,14 @@ def __getattr__(name: str):
         from cymatics_geometry import pipeline as _pipeline
 
         return getattr(_pipeline, name)
+    if name in {
+        "VoxelPipeConfig",
+        "VoxelPipeResult",
+        "export_stl",
+        "pipe_and_export_stl",
+        "pipe_lines_to_voxels",
+    }:
+        from cymatics_geometry import voxels as _voxels
+
+        return getattr(_voxels, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

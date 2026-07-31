@@ -409,6 +409,7 @@ dependencies = [
     { name = "jupyterlab" },
     { name = "matplotlib" },
     { name = "numpy" },
+    { name = "picopie" },
     { name = "plotly" },
     { name = "pyvista" },
     { name = "scipy" },
@@ -429,6 +430,7 @@ requires-dist = [
     { name = "jupyterlab", specifier = ">=4.0" },
     { name = "matplotlib", specifier = ">=3.9" },
     { name = "numpy", specifier = ">=2.0" },
+    { name = "picopie", specifier = ">=0.7.0" },
     { name = "plotly", specifier = ">=6.9.0" },
     { name = "pyvista", specifier = ">=0.44" },
     { name = "scipy", specifier = ">=1.14" },
@@ -1324,6 +1326,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/42/92/cc564bf6381ff43ce1f4d06852fc19a2f11d180f23dc32d9588bee2f149d/pexpect-4.9.0.tar.gz", hash = "sha256:ee7d41123f3c9911050ea2c2dac107568dc43b2d3b0c7557a33212c398ead30f", size = 166450, upload-time = "2023-11-25T09:07:26.339Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9e/c3/059298687310d527a58bb01f3b1965787ee3b40dce76752eda8b44e9a2c5/pexpect-4.9.0-py2.py3-none-any.whl", hash = "sha256:7236d1e080e4936be2dc3e326cec0af72acf9212a7e1d060210e70a47e253523", size = 63772, upload-time = "2023-11-25T06:56:14.81Z" },
+]
+
+[[package]]
+name = "picopie"
+version = "0.7.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/eb/b1/0b712ad0e3f25bc4f2f844f4f1b70e3bff84b412c2745946a491fc95599b/picopie-0.7.0.tar.gz", hash = "sha256:85a95636b83dc7bcce2a3d4af7c876357671365be466772e49b4047665d5cdc3", size = 1057780, upload-time = "2026-07-02T20:33:34.566Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cd/dd/d3b1b08db5012faa27c255708e497ee474defeee06d4465419c2ddbfd7e3/picopie-0.7.0-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:aa35d800786d658b7762038f89d709f260c6eb39081b82f6530f020b6efb1b55", size = 20101482, upload-time = "2026-07-02T20:33:27.719Z" },
+    { url = "https://files.pythonhosted.org/packages/11/e6/4acd33a15bf77ee702dec7dec33f4f310bf2bcd9108d2f3c7259beb3b14a/picopie-0.7.0-cp313-cp313-manylinux_2_34_x86_64.whl", hash = "sha256:fac122f37d4464e9adb00a03de18b8124413ce1b62d847f70c04ceef38c13330", size = 6022184, upload-time = "2026-07-02T20:33:30.487Z" },
+    { url = "https://files.pythonhosted.org/packages/36/ff/e4a478d3b95dccfefcd9f63f14b7f9f9a65539c25d7bd604ff007b1818da/picopie-0.7.0-cp313-cp313-win_amd64.whl", hash = "sha256:e824a41d866bd66f82856645c87fc7b1e5dee9d54035e676a4b09d3075c0c429", size = 3479308, upload-time = "2026-07-02T20:33:32.717Z" },
 ]
 
 [[package]]

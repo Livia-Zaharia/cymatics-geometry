@@ -14,10 +14,25 @@ from matplotlib.colors import Normalize
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 — registers 3D projection
 from plotly.graph_objs import FigureWidget
 
-from cymatics_geometry.config import PipelineConfig
+from cymatics_geometry.config import PipelineConfig, save_model_params
 from cymatics_geometry.grid import SOURCE_LABELS, grid_shape
 from cymatics_geometry.pipeline import PipelineResult, run_pipeline
 from cymatics_geometry.shapes import ShapeParams, shape_boundary_polyline, shape_bounds
+from cymatics_geometry.voxels import (
+    VOXEL_PARAM_HELP,
+    VoxelPipeConfig,
+    pipe_and_export_stl,
+    preview_pipe_mesh,
+)
+
+_SOLID_MESH_LIGHTING: dict[str, float] = {
+    "ambient": 0.35,
+    "diffuse": 0.95,
+    "specular": 0.45,
+    "roughness": 0.4,
+    "fresnel": 0.15,
+}
+_SOLID_MESH_LIGHTPOS: dict[str, float] = {"x": 1200, "y": -800, "z": 900}
 
 
 def _source_arrays(result: PipelineResult) -> tuple[np.ndarray, tuple[str, ...], tuple[bool, ...]]:
@@ -1116,6 +1131,121 @@ def show_interactive_line_viewer(
         style=global_style,
         layout=full_slider,
     )
+    # --- Voxel pipe (3D-printable solid) ---
+    voxel_size_sl = FloatSlider(
+        value=0.8,
+        min=0.2,
+        max=2.5,
+        step=0.05,
+        description="voxel",
+        readout_format=".2f",
+        style=global_style,
+        layout=full_slider,
+        tooltip=VOXEL_PARAM_HELP["voxel_size"],
+    )
+    pipe_radius_sl = FloatSlider(
+        value=1.2,
+        min=0.2,
+        max=6.0,
+        step=0.1,
+        description="radius",
+        readout_format=".1f",
+        style=global_style,
+        layout=full_slider,
+        tooltip=VOXEL_PARAM_HELP["pipe_radius"],
+    )
+    inner_radius_sl = FloatSlider(
+        value=0.0,
+        min=0.0,
+        max=4.0,
+        step=0.1,
+        description="inner r",
+        readout_format=".1f",
+        style=global_style,
+        layout=full_slider,
+        tooltip=VOXEL_PARAM_HELP["inner_radius"],
+    )
+    mod_amp_sl = FloatSlider(
+        value=0.0,
+        min=0.0,
+        max=2.0,
+        step=0.05,
+        description="mod amp",
+        readout_format=".2f",
+        style=global_style,
+        layout=full_slider,
+        tooltip=VOXEL_PARAM_HELP["modulation_amp"],
+    )
+    mod_freq_sl = FloatSlider(
+        value=2.0,
+        min=0.0,
+        max=12.0,
+        step=0.5,
+        description="mod freq",
+        readout_format=".1f",
+        style=global_style,
+        layout=full_slider,
+        tooltip=VOXEL_PARAM_HELP["modulation_freq"],
+    )
+    mod_lobes_sl = IntSlider(
+        value=0,
+        min=0,
+        max=12,
+        step=1,
+        description="lobes",
+        style=global_style,
+        layout=full_slider,
+        tooltip=VOXEL_PARAM_HELP["modulation_lobes"],
+    )
+    line_stride_sl = IntSlider(
+        value=2,
+        min=1,
+        max=10,
+        step=1,
+        description="line step",
+        style=global_style,
+        layout=full_slider,
+        tooltip=VOXEL_PARAM_HELP["line_stride"],
+    )
+    point_stride_sl = IntSlider(
+        value=2,
+        min=1,
+        max=10,
+        step=1,
+        description="pt step",
+        style=global_style,
+        layout=full_slider,
+        tooltip=VOXEL_PARAM_HELP["point_stride"],
+    )
+    spine_samples_sl = IntSlider(
+        value=40,
+        min=8,
+        max=120,
+        step=4,
+        description="spine n",
+        style=global_style,
+        layout=full_slider,
+        tooltip=VOXEL_PARAM_HELP["spine_samples"],
+    )
+    voxel_help = HTML(
+        value=(
+            "<div style='font-size:11px;color:#4b5563;line-height:1.35;margin:4px 0 8px 0'>"
+            "<b>Preview solid</b> — opaque shaded tubes in the 3D view "
+            "(hides the wireframe).<br>"
+            "<b>Export STL</b> — real PicoPie voxels + file write (slower).<br>"
+            "<b>Save params</b> — write pipeline + voxel settings to "
+            "<code>configs/</code>.<br>"
+            "<b>voxel</b> — cell size for STL (smaller = smoother/slower).<br>"
+            "<b>radius</b> — outer tube thickness along each line.<br>"
+            "<b>inner r</b> — hollow bore for STL (0 = solid rod).<br>"
+            "<b>mod amp / freq / lobes</b> — STL surface ripples.<br>"
+            "<b>line/pt step</b> — skip lines/points for a lighter lattice.<br>"
+            "<b>spine n</b> — cubic-spline samples along each bend."
+            "</div>"
+        ),
+        layout=Layout(width="98%"),
+    )
+    voxel_status = HTML(value="", layout=Layout(width="98%"))
     shape_param_box = VBox(
         [],
         layout=Layout(width="100%", margin="0 0 6px 0"),
@@ -1203,6 +1333,75 @@ def show_interactive_line_viewer(
             "</div>"
         )
 
+    def _voxel_config_from_state() -> VoxelPipeConfig:
+        return VoxelPipeConfig(
+            voxel_size=float(voxel_size_sl.value),
+            pipe_radius=float(pipe_radius_sl.value),
+            inner_radius=min(float(inner_radius_sl.value), float(pipe_radius_sl.value) * 0.85),
+            modulation_amp=float(mod_amp_sl.value),
+            modulation_freq=float(mod_freq_sl.value),
+            modulation_lobes=int(mod_lobes_sl.value),
+            line_stride=int(line_stride_sl.value),
+            point_stride=int(point_stride_sl.value),
+            spine_samples=int(spine_samples_sl.value),
+        )
+
+    def _set_line_opacity(opacity: float) -> None:
+        """Dim / restore wireframe traces so a solid overlay is obvious."""
+        op = float(np.clip(opacity, 0.0, 1.0))
+        with fig.batch_update():
+            # 0 = ghost outline, 1 = points, 2 = lines, 3 = sources
+            fig.data[0].opacity = op
+            fig.data[1].opacity = min(op, 0.35)
+            fig.data[2].opacity = op
+
+    def _clear_solid_overlay() -> None:
+        if len(fig.data) <= 4:
+            return
+        # Tiny dummy triangle keeps Mesh3d alive; empty arrays often break updates
+        with fig.batch_update():
+            fig.data[4].update(
+                x=[0.0, 0.0, 0.0],
+                y=[0.0, 0.0, 0.0],
+                z=[0.0, 0.0, 0.0],
+                i=[0],
+                j=[1],
+                k=[2],
+                visible=False,
+            )
+        _set_line_opacity(1.0)
+
+    def _overlay_solid_mesh(mesh, *, label: str = "pipe solid") -> None:
+        """Show an opaque shaded Mesh3d overlay and hide the wireframe."""
+        verts = np.asarray(mesh.vertices, dtype=float)
+        faces = np.asarray(mesh.faces, dtype=np.int32)
+        if len(verts) == 0 or len(faces) == 0:
+            _clear_solid_overlay()
+            return
+        # Cap for browser; subsample faces only (verts stay referenced)
+        if len(faces) > 60_000:
+            idx = np.linspace(0, len(faces) - 1, 60_000, dtype=int)
+            faces = faces[idx]
+        with fig.batch_update():
+            fig.data[4].update(
+                x=verts[:, 0],
+                y=verts[:, 1],
+                z=verts[:, 2],
+                i=faces[:, 0],
+                j=faces[:, 1],
+                k=faces[:, 2],
+                visible=True,
+                opacity=1.0,
+                color="#38bdf8",
+                name=label,
+                flatshading=False,
+                lighting=dict(_SOLID_MESH_LIGHTING),
+                lightposition=dict(_SOLID_MESH_LIGHTPOS),
+                hoverinfo="skip",
+                showscale=False,
+            )
+        _set_line_opacity(0.0)
+
     initial = run_pipeline(_config_from_state(), verbose=False)
     fig = _line_figure_widget(
         initial,
@@ -1210,12 +1409,35 @@ def show_interactive_line_viewer(
         max_vertices=max_vertices,
         line_color_mode=str(line_color_dd.value),
     )
+    # Placeholder Mesh3d — must start with a real triangle (empty arrays
+    # break later FigureWidget updates of i/j/k on some Plotly versions).
+    fig.add_trace(
+        go.Mesh3d(
+            x=[0.0, 0.0, 0.0],
+            y=[0.0, 0.0, 0.0],
+            z=[0.0, 0.0, 0.0],
+            i=[0],
+            j=[1],
+            k=[2],
+            color="#38bdf8",
+            opacity=1.0,
+            name="pipe solid",
+            hoverinfo="skip",
+            flatshading=False,
+            visible=False,
+            showscale=False,
+            lighting=dict(_SOLID_MESH_LIGHTING),
+            lightposition=dict(_SOLID_MESH_LIGHTPOS),
+        )
+    )
     status.value = _status_text(initial)
+    _last_live: dict[str, PipelineResult] = {"result": initial}
 
     def _rerun(_change: object | None = None) -> None:
         if _loading["on"]:
             return
         live = run_pipeline(_config_from_state(), verbose=False)
+        _last_live["result"] = live
         _apply_result_to_figure(
             fig,
             live,
@@ -1224,6 +1446,7 @@ def show_interactive_line_viewer(
             line_color_mode=str(line_color_dd.value),
         )
         status.value = _status_text(live)
+        _clear_solid_overlay()
 
     def _mirror_from_first(linked: list[str]) -> None:
         """Copy first selected source (SOURCE_LABELS order) onto the rest."""
@@ -1257,9 +1480,13 @@ def show_interactive_line_viewer(
         _rerun()
 
     def _select_and_mirror(keys: set[str]) -> None:
+        """Link ``keys``, zero deselected sources, mirror from first linked."""
         _loading["on"] = True
+        zero = {"amp": 0.0, "wavelength": 0.0, "release": 0.0}
         for key, w in source_widgets.items():
             w["link"].value = key in keys
+            if key not in keys:
+                _write_source(key, zero)
         _loading["on"] = False
         linked = _linked_keys()
         _mirror_from_first(linked)
@@ -1276,9 +1503,87 @@ def show_interactive_line_viewer(
 
     def _link_clear(_btn: object = None) -> None:
         _loading["on"] = True
-        for w in source_widgets.values():
+        zero = {"amp": 0.0, "wavelength": 0.0, "release": 0.0}
+        for key, w in source_widgets.items():
             w["link"].value = False
+            _write_source(key, zero)
         _loading["on"] = False
+        _rerun()
+
+    def _on_preview_solid(_btn: object = None) -> None:
+        """Instant tube overlay (no PicoPie) so the display clearly changes."""
+        live = _last_live.get("result") or run_pipeline(_config_from_state(), verbose=False)
+        vcfg = _voxel_config_from_state()
+        voxel_status.value = (
+            "<div style='font-size:11px;color:#b45309'>"
+            f"Building tube preview (radius={vcfg.pipe_radius}, "
+            f"line step={vcfg.line_stride})…"
+            "</div>"
+        )
+        try:
+            mesh = preview_pipe_mesh(live, vcfg)
+            _overlay_solid_mesh(mesh, label="tube preview")
+            voxel_status.value = (
+                "<div style='font-size:11px;color:#065f46'>"
+                f"Preview tubes · faces={len(mesh.faces)} · "
+                "fast approx (Export STL runs real voxels)"
+                "</div>"
+            )
+        except Exception as exc:  # noqa: BLE001 — surface errors in the widget
+            voxel_status.value = (
+                f"<div style='font-size:11px;color:#b91c1c'>Preview failed: {exc}</div>"
+            )
+
+    def _on_export_stl(_btn: object = None) -> None:
+        from pathlib import Path as _Path
+
+        live = _last_live.get("result") or run_pipeline(_config_from_state(), verbose=False)
+        vcfg = _voxel_config_from_state()
+        voxel_status.value = (
+            "<div style='font-size:11px;color:#b45309'>"
+            "Building PicoPie voxel solid + STL (can take a while)…"
+            "</div>"
+        )
+        try:
+            # Immediate tube overlay so the UI responds while voxels bake
+            preview = preview_pipe_mesh(live, vcfg)
+            _overlay_solid_mesh(preview, label="tube preview")
+            solid, path = pipe_and_export_stl(
+                live,
+                _Path("exports"),
+                vcfg,
+                verbose=False,
+            )
+            _overlay_solid_mesh(solid.trimesh_result, label="voxel solid")
+            voxel_status.value = (
+                "<div style='font-size:11px;color:#065f46'>"
+                f"STL → <b>{path.name}</b> · faces={solid.stats['faces']} · "
+                f"vol~={solid.volume:.1f} · watertight={solid.is_watertight}"
+                "</div>"
+            )
+        except Exception as exc:  # noqa: BLE001 — surface errors in the widget
+            voxel_status.value = (
+                f"<div style='font-size:11px;color:#b91c1c'>STL export failed: {exc}</div>"
+            )
+
+    def _on_save_params(_btn: object = None) -> None:
+        path = save_model_params(
+            _config_from_state(),
+            _voxel_config_from_state(),
+            Path("configs"),
+        )
+        if path is None:
+            voxel_status.value = (
+                "<div style='font-size:11px;color:#6b7280'>"
+                "Params identical to an existing file — not saved."
+                "</div>"
+            )
+            return
+        voxel_status.value = (
+            "<div style='font-size:11px;color:#065f46'>"
+            f"Params → <b>{path.as_posix()}</b>"
+            "</div>"
+        )
 
     btn_style = Layout(width="88px", height="28px", margin="2px")
     btn_corners = Button(description="corners", layout=btn_style)
@@ -1289,6 +1594,25 @@ def show_interactive_line_viewer(
     btn_mids.on_click(_link_mids)
     btn_all.on_click(_link_all)
     btn_clear.on_click(_link_clear)
+    btn_preview_solid = Button(
+        description="Preview solid",
+        layout=Layout(width="140px", height="30px", margin="2px"),
+        tooltip="Fast tube overlay along current lines (instant; not the voxel STL)",
+    )
+    btn_export_stl = Button(
+        description="Export STL",
+        button_style="success",
+        layout=Layout(width="120px", height="30px", margin="2px"),
+        tooltip="PicoPie voxels along lines → exports/cymatics_pipe_*.stl",
+    )
+    btn_save_params = Button(
+        description="Save params",
+        layout=Layout(width="120px", height="30px", margin="2px"),
+        tooltip="Write pipeline + voxel settings JSON to configs/",
+    )
+    btn_preview_solid.on_click(_on_preview_solid)
+    btn_export_stl.on_click(_on_export_stl)
+    btn_save_params.on_click(_on_save_params)
 
     for w in source_widgets.values():
         for sl in (w["amp"], w["wavelength"], w["release"]):
@@ -1353,7 +1677,7 @@ def show_interactive_line_viewer(
                 "<div style='font-size:13px;margin:14px 0 4px 0'><b>Mirroring</b> "
                 "<span style='color:#6b7280;font-size:11px'>"
                 "copies from the <b>first</b> selected point in order "
-                "(SW→SE→NE→NW→S→E→N→W)"
+                "(SW→SE→NE→NW→S→E→N→W); deselected → 0"
                 "</span></div>"
             ),
             HBox(
@@ -1369,6 +1693,28 @@ def show_interactive_line_viewer(
             grid_x,
             grid_y,
             status,
+            HTML(
+                "<div style='font-size:13px;margin:16px 0 4px 0'>"
+                "<b>Voxel print</b> "
+                "<span style='color:#6b7280;font-size:11px'>"
+                "pipe lines → PicoPie voxels → STL"
+                "</span></div>"
+            ),
+            voxel_help,
+            voxel_size_sl,
+            pipe_radius_sl,
+            inner_radius_sl,
+            mod_amp_sl,
+            mod_freq_sl,
+            mod_lobes_sl,
+            line_stride_sl,
+            point_stride_sl,
+            spine_samples_sl,
+            HBox(
+                [btn_preview_solid, btn_export_stl, btn_save_params],
+                layout=Layout(width="100%", flex_flow="row wrap", margin="6px 0 0 0"),
+            ),
+            voxel_status,
         ],
         layout=Layout(
             width="380px",
