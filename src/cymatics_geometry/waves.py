@@ -271,7 +271,7 @@ def release_xy_offsets(
     if np.any(has_wave):
         phase = k[None, :] * r - omega * t + phases[None, :]
         ring = np.cos(phase)
-        ring_gain = 0.25 + 0.35 * np.maximum(amplitudes, 0.0)
+        ring_gain = 0.25 + 0.35 * np.abs(amplitudes)
         ripple = np.where(
             has_wave[None, :],
             1.0 + ring_gain[None, :] * ring,

@@ -16,7 +16,11 @@ from typing import Any, Callable
 import numpy as np
 import trimesh
 
-from cymatics_geometry.lines import grid_line_segments
+from cymatics_geometry.lines import (
+    grid_line_segments,
+    select_segments_strided,
+    stride_indices_with_boundary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +57,18 @@ VOXEL_PARAM_HELP: dict[str, str] = {
         "Keep every N-th grid line (rows and columns). "
         "1 = all lines; 2 = every other → fewer tubes, faster, less dense lattice."
     ),
+    "boundary_lines_x": (
+        "X-rows end treatment (signed): >0 keep first/last N, <0 remove first/last "
+        "|N|, 0 = stride only."
+    ),
+    "boundary_lines_y": (
+        "Y-cols end treatment (signed): >0 keep first/last N, <0 remove first/last "
+        "|N|, 0 = stride only."
+    ),
+    "boundary_lines": (
+        "Legacy single end treatment applied to both axes when per-axis fields "
+        "are absent. Prefer boundary_lines_x / boundary_lines_y."
+    ),
     "point_stride": (
         "Keep every N-th sample along each polyline before building the spine. "
         "Higher → coarser curve following, much faster voxelization."
@@ -60,6 +76,11 @@ VOXEL_PARAM_HELP: dict[str, str] = {
     "spine_samples": (
         "Cubic-spline arc-length samples for each polyline spine (preview + STL). "
         "More samples → smoother bends; cost grows with sample count × lines."
+    ),
+    "spine_smooth": (
+        "Line-smoothing strength before piping (0 = interpolate through samples, "
+        "higher → rounder bends that ease sharp kinks from the grid). "
+        "Applies to preview tubes and PicoPie spines."
     ),
 }
 
@@ -80,8 +101,15 @@ class VoxelPipeConfig:
     modulation_freq: float = 2.0
     modulation_lobes: int = 0
     line_stride: int = 2
+    # Signed end treatment per direction (>0 keep, <0 remove, 0 = stride only)
+    boundary_lines_x: int = 1
+    boundary_lines_y: int = 1
+    # Legacy alias (from_dict maps onto both axes when new fields absent)
+    boundary_lines: int = 1
     point_stride: int = 2
     spine_samples: int = 40
+    # Relative smoothing for cubic-spline spines (0 = exact interpolation)
+    spine_smooth: float = 1.0
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> VoxelPipeConfig:
@@ -101,6 +129,12 @@ class VoxelPipeConfig:
                 kwargs[name] = float(value)
             else:
                 kwargs[name] = value
+        if "boundary_lines" in raw:
+            legacy = int(raw["boundary_lines"])
+            if "boundary_lines_x" not in raw:
+                kwargs["boundary_lines_x"] = legacy
+            if "boundary_lines_y" not in raw:
+                kwargs["boundary_lines_y"] = legacy
         return cls(**kwargs)
 
     def __post_init__(self) -> None:
@@ -124,6 +158,8 @@ class VoxelPipeConfig:
             raise ValueError("point_stride must be ≥ 1")
         if self.spine_samples < 4:
             raise ValueError("spine_samples must be ≥ 4")
+        if self.spine_smooth < 0:
+            raise ValueError("spine_smooth must be ≥ 0")
 
 
 @dataclass
@@ -146,19 +182,35 @@ class VoxelPipeResult:
         return bool(mesh.is_watertight and mesh.is_volume and abs(float(mesh.volume)) > 0.0)
 
 
+# Back-compat aliases (selection lives in lines.py — used by display + voxels)
+_stride_indices_with_boundary = stride_indices_with_boundary
+_select_segments_strided = select_segments_strided
+
+
 def polyline_segments_from_result(
     result: Any,
     *,
     line_stride: int = 1,
     point_stride: int = 1,
+    boundary_lines_x: int = 0,
+    boundary_lines_y: int = 0,
+    boundary_lines: int | None = None,
 ) -> list[np.ndarray]:
     """Extract subsampled polylines from a :class:`PipelineResult`.
 
     Prefers the same grid topology as stage 5 (X-rows / Y-cols). Falls back to
     splitting ``result.polyline`` on NaN breaks.
+
+    ``boundary_lines_x`` / ``boundary_lines_y`` are signed (keep vs remove ends).
+    Legacy ``boundary_lines`` applies the same value to both axes when given.
     """
     stride_line = max(1, int(line_stride))
     stride_pt = max(1, int(point_stride))
+    if boundary_lines is not None:
+        bx = by = int(boundary_lines)
+    else:
+        bx = int(boundary_lines_x)
+        by = int(boundary_lines_y)
     cfg = result.config
     nx = int(cfg.grid_size_x)
     ny = int(cfg.grid_size_y)
@@ -174,18 +226,22 @@ def polyline_segments_from_result(
             lines_x=bool(cfg.lines_x),
             lines_y=bool(cfg.lines_y),
         )
-        # Apply line_stride separately within X-rows and Y-cols so both
-        # directions thin out evenly.
         selected: list[np.ndarray] = []
         n_x = ny if cfg.lines_x else 0
         n_y = nx if cfg.lines_y else 0
         x_segs = raw[:n_x]
         y_segs = raw[n_x : n_x + n_y]
-        selected.extend(x_segs[::stride_line])
-        selected.extend(y_segs[::stride_line])
+        selected.extend(
+            select_segments_strided(x_segs, stride=stride_line, boundary=bx)
+        )
+        selected.extend(
+            select_segments_strided(y_segs, stride=stride_line, boundary=by)
+        )
     else:
         selected = _split_nan_polyline(np.asarray(result.polyline, dtype=float))
-        selected = selected[::stride_line]
+        selected = select_segments_strided(
+            selected, stride=stride_line, boundary=bx
+        )
 
     out: list[np.ndarray] = []
     for seg in selected:
@@ -228,33 +284,67 @@ def _split_nan_polyline(polyline: np.ndarray) -> list[np.ndarray]:
     return segments
 
 
+def _preview_radial_segments(config: VoxelPipeConfig) -> int:
+    """Facet count around the tube — larger voxels → coarser preview rings."""
+    radius = max(float(config.pipe_radius), 1e-6)
+    voxel = max(float(config.voxel_size), 1e-6)
+    # Circumference / voxel_size ≈ how many facets OpenVDB can resolve
+    n = int(round(2.0 * np.pi * radius / voxel))
+    return int(np.clip(n, 4, 48))
+
+
+def _preview_spine_samples(config: VoxelPipeConfig, segment: np.ndarray) -> int:
+    """Spine density for preview — denser when voxel_size is smaller."""
+    pts = np.asarray(segment, dtype=float)
+    if len(pts) < 2:
+        return max(4, int(config.spine_samples))
+    length = float(np.sum(np.linalg.norm(np.diff(pts, axis=0), axis=1)))
+    voxel = max(float(config.voxel_size), 1e-6)
+    from_voxel = int(round(length / voxel)) + 1
+    # Honour user spine_samples as an upper preference, but never starve small voxels
+    target = max(int(config.spine_samples), from_voxel)
+    return int(np.clip(target, 8, 200))
+
+
 def preview_pipe_mesh(
     result: Any,
     config: VoxelPipeConfig | None = None,
     *,
-    radial_segments: int = 8,
+    radial_segments: int | None = None,
 ) -> trimesh.Trimesh:
     """Fast approximate tube mesh for interactive preview (no PicoPie / voxels).
 
-    Sweeps simple cylinders along the same subsampled polylines the voxel
-    exporter uses. Instant feedback in the notebook; use
-    :func:`pipe_lines_to_voxels` for the printable solid.
+    Lofts a continuous circle along cubic-spline-smoothed spines. ``voxel_size``
+    drives preview facet density (smaller → rounder rings / denser spines) so the
+    voxel slider visibly changes the overlay. Use :func:`pipe_lines_to_voxels`
+    for the printable solid.
     """
     cfg = config or VoxelPipeConfig()
     segments = polyline_segments_from_result(
         result,
         line_stride=cfg.line_stride,
         point_stride=cfg.point_stride,
+        boundary_lines_x=cfg.boundary_lines_x,
+        boundary_lines_y=cfg.boundary_lines_y,
     )
     if not segments:
         raise ValueError("No polyline segments to preview.")
 
     parts: list[trimesh.Trimesh] = []
     radius = float(cfg.pipe_radius)
+    rings = (
+        int(radial_segments)
+        if radial_segments is not None
+        else _preview_radial_segments(cfg)
+    )
     for seg in segments:
-        # Cap samples so preview stays light even on dense grids
-        spine = _smooth_resample_polyline(seg, min(int(cfg.spine_samples), 24))
-        tube = _polyline_tube_mesh(spine, radius, radial_segments=radial_segments)
+        n_spine = _preview_spine_samples(cfg, seg)
+        spine = _smooth_resample_polyline(
+            seg,
+            n_spine,
+            smooth=float(cfg.spine_smooth),
+        )
+        tube = _lofted_tube_mesh(spine, radius, radial_segments=rings)
         if tube is not None and len(tube.faces) > 0:
             parts.append(tube)
 
@@ -265,55 +355,137 @@ def preview_pipe_mesh(
     return trimesh.util.concatenate(parts)
 
 
+def _parallel_transport_frames(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Orthonormal (T, N, B) frames along a polyline via parallel transport."""
+    pts = np.asarray(points, dtype=float)
+    n = len(pts)
+    tangents = np.zeros((n, 3), dtype=float)
+    if n >= 2:
+        diffs = np.diff(pts, axis=0)
+        norms = np.linalg.norm(diffs, axis=1, keepdims=True)
+        unit = diffs / np.maximum(norms, 1e-12)
+        tangents[0] = unit[0]
+        tangents[-1] = unit[-1]
+        if n > 2:
+            tangents[1:-1] = unit[:-1] + unit[1:]
+            t_norms = np.linalg.norm(tangents, axis=1, keepdims=True)
+            tangents = tangents / np.maximum(t_norms, 1e-12)
+
+    # Seed a normal perpendicular to the first tangent
+    t0 = tangents[0]
+    helper = np.array([0.0, 0.0, 1.0]) if abs(t0[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
+    n0 = np.cross(t0, helper)
+    n0_norm = float(np.linalg.norm(n0))
+    if n0_norm < 1e-12:
+        helper = np.array([0.0, 1.0, 0.0])
+        n0 = np.cross(t0, helper)
+        n0_norm = float(np.linalg.norm(n0))
+    n0 /= max(n0_norm, 1e-12)
+    normals = np.zeros((n, 3), dtype=float)
+    binormals = np.zeros((n, 3), dtype=float)
+    normals[0] = n0
+    binormals[0] = np.cross(t0, n0)
+
+    for i in range(1, n):
+        t_prev = tangents[i - 1]
+        t_cur = tangents[i]
+        # Rotate previous normal by the same rotation that maps t_prev → t_cur
+        axis = np.cross(t_prev, t_cur)
+        axis_norm = float(np.linalg.norm(axis))
+        if axis_norm < 1e-12:
+            normals[i] = normals[i - 1]
+        else:
+            axis = axis / axis_norm
+            cos_a = float(np.clip(np.dot(t_prev, t_cur), -1.0, 1.0))
+            sin_a = axis_norm  # |t_prev × t_cur| = sinθ when both unit
+            # Rodrigues on previous normal
+            n_prev = normals[i - 1]
+            normals[i] = (
+                n_prev * cos_a
+                + np.cross(axis, n_prev) * sin_a
+                + axis * np.dot(axis, n_prev) * (1.0 - cos_a)
+            )
+            n_norm = float(np.linalg.norm(normals[i]))
+            normals[i] /= max(n_norm, 1e-12)
+        # Re-orthogonalize against current tangent
+        normals[i] = normals[i] - np.dot(normals[i], t_cur) * t_cur
+        n_norm = float(np.linalg.norm(normals[i]))
+        normals[i] /= max(n_norm, 1e-12)
+        binormals[i] = np.cross(t_cur, normals[i])
+    return tangents, normals, binormals
+
+
+def _lofted_tube_mesh(
+    points: np.ndarray,
+    radius: float,
+    *,
+    radial_segments: int = 12,
+) -> trimesh.Trimesh | None:
+    """Continuous tube by lofting circles along parallel-transport frames.
+
+    Avoids the faceted look of stacked short cylinders at every spine sample.
+    """
+    pts = _dedupe_polyline(np.asarray(points, dtype=float))
+    if len(pts) < 2 or radius <= 0:
+        return None
+    rings = max(4, int(radial_segments))
+    _tangents, normals, binormals = _parallel_transport_frames(pts)
+    angles = np.linspace(0.0, 2.0 * np.pi, rings, endpoint=False)
+    cos_a = np.cos(angles)
+    sin_a = np.sin(angles)
+
+    ring_verts: list[np.ndarray] = []
+    for i, p in enumerate(pts):
+        ring = (
+            p[None, :]
+            + radius
+            * (
+                cos_a[:, None] * normals[i][None, :]
+                + sin_a[:, None] * binormals[i][None, :]
+            )
+        )
+        ring_verts.append(ring)
+    verts = np.vstack(ring_verts)
+
+    faces: list[list[int]] = []
+    for i in range(len(pts) - 1):
+        base_a = i * rings
+        base_b = (i + 1) * rings
+        for j in range(rings):
+            j2 = (j + 1) % rings
+            a0, a1 = base_a + j, base_a + j2
+            b0, b1 = base_b + j, base_b + j2
+            faces.append([a0, b0, b1])
+            faces.append([a0, b1, a1])
+
+    # Cap ends with fans to the spine endpoints
+    cap_centers = [pts[0], pts[-1]]
+    for end_i, center in enumerate(cap_centers):
+        c_idx = len(verts) + end_i
+        ring_base = 0 if end_i == 0 else (len(pts) - 1) * rings
+        for j in range(rings):
+            j2 = (j + 1) % rings
+            if end_i == 0:
+                faces.append([c_idx, ring_base + j2, ring_base + j])
+            else:
+                faces.append([c_idx, ring_base + j, ring_base + j2])
+    verts = np.vstack([verts, np.asarray(cap_centers, dtype=float)])
+
+    return trimesh.Trimesh(
+        vertices=verts,
+        faces=np.asarray(faces, dtype=np.int64),
+        process=False,
+    )
+
+
 def _polyline_tube_mesh(
     points: np.ndarray,
     radius: float,
     *,
     radial_segments: int = 8,
 ) -> trimesh.Trimesh | None:
-    """Join short cylinders between consecutive polyline samples."""
-    pts = np.asarray(points, dtype=float)
-    if len(pts) < 2 or radius <= 0:
-        return None
-
-    parts: list[trimesh.Trimesh] = []
-    for a, b in zip(pts[:-1], pts[1:]):
-        delta = b - a
-        length = float(np.linalg.norm(delta))
-        if length < 1e-9:
-            continue
-        # trimesh cylinders are centered on Z; transform to segment
-        cyl = trimesh.creation.cylinder(
-            radius=radius,
-            height=length,
-            sections=max(4, int(radial_segments)),
-        )
-        mid = 0.5 * (a + b)
-        # Align local Z with segment direction
-        z_axis = delta / length
-        # Build orthonormal basis
-        helper = np.array([0.0, 0.0, 1.0]) if abs(z_axis[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
-        x_axis = np.cross(helper, z_axis)
-        x_norm = float(np.linalg.norm(x_axis))
-        if x_norm < 1e-9:
-            helper = np.array([0.0, 1.0, 0.0])
-            x_axis = np.cross(helper, z_axis)
-            x_norm = float(np.linalg.norm(x_axis))
-        x_axis /= x_norm
-        y_axis = np.cross(z_axis, x_axis)
-        transform = np.eye(4)
-        transform[:3, 0] = x_axis
-        transform[:3, 1] = y_axis
-        transform[:3, 2] = z_axis
-        transform[:3, 3] = mid
-        cyl.apply_transform(transform)
-        parts.append(cyl)
-
-    if not parts:
-        return None
-    if len(parts) == 1:
-        return parts[0]
-    return trimesh.util.concatenate(parts)
+    """Legacy stacked-cylinder tube; prefer :func:`_lofted_tube_mesh`."""
+    return _lofted_tube_mesh(points, radius, radial_segments=radial_segments)
 
 
 def _resample_polyline(points: np.ndarray, n_samples: int) -> np.ndarray:
@@ -349,8 +521,18 @@ def _dedupe_polyline(points: np.ndarray, *, eps: float = 1e-9) -> np.ndarray:
     return pts[keep]
 
 
-def _smooth_resample_polyline(points: np.ndarray, n_samples: int) -> np.ndarray:
-    """Cubic-spline arc-length resample; falls back to linear if needed."""
+def _smooth_resample_polyline(
+    points: np.ndarray,
+    n_samples: int,
+    *,
+    smooth: float = 0.0,
+) -> np.ndarray:
+    """Cubic-spline arc-length resample; falls back to linear if needed.
+
+    ``smooth`` ≥ 0 is a relative fit slack for ``splprep`` (scaled by point
+    count and segment length). 0 interpolates through samples; larger values
+    round sharp kinks from a coarse grid before piping.
+    """
     from scipy.interpolate import splev, splprep
 
     n = max(2, int(n_samples))
@@ -360,10 +542,13 @@ def _smooth_resample_polyline(points: np.ndarray, n_samples: int) -> np.ndarray:
     if len(pts) < 4:
         return _resample_polyline(pts, n)
 
+    # Scale smoothing with path length so the control stays intuitive in world units
+    seg_len = float(np.sum(np.linalg.norm(np.diff(pts, axis=0), axis=1)))
+    s_val = max(0.0, float(smooth)) * max(seg_len, 1e-6) * 0.02
     try:
         tck, _u = splprep(
             [pts[:, 0], pts[:, 1], pts[:, 2]],
-            s=0.0,
+            s=s_val,
             k=min(3, len(pts) - 1),
         )
         u_new = np.linspace(0.0, 1.0, n)
@@ -418,7 +603,18 @@ def _init_picopie(voxel_size: float) -> None:
 def _segment_to_voxels(segment: np.ndarray, config: VoxelPipeConfig) -> Any:
     from picopie.shapes import Cylinder, Frames, Pipe
 
-    spine_pts = _smooth_resample_polyline(segment, int(config.spine_samples))
+    # Denser spines when voxels are small so the solid follows the smoothed curve
+    pts = np.asarray(segment, dtype=float)
+    length = float(np.sum(np.linalg.norm(np.diff(pts, axis=0), axis=1))) if len(pts) >= 2 else 0.0
+    voxel = max(float(config.voxel_size), 1e-6)
+    n_from_voxel = int(round(length / voxel)) + 1
+    n_spine = max(int(config.spine_samples), n_from_voxel, 8)
+    n_spine = min(n_spine, 400)
+    spine_pts = _smooth_resample_polyline(
+        segment,
+        n_spine,
+        smooth=float(config.spine_smooth),
+    )
     frames = Frames.aligned(spine_pts, "min_rotation")
     outer = _radius_modulation(config)
     if float(config.inner_radius) > 0.0:
@@ -461,6 +657,8 @@ def pipe_lines_to_voxels(
         result,
         line_stride=cfg.line_stride,
         point_stride=cfg.point_stride,
+        boundary_lines_x=cfg.boundary_lines_x,
+        boundary_lines_y=cfg.boundary_lines_y,
     )
     if not segments:
         raise ValueError(
@@ -495,8 +693,11 @@ def pipe_lines_to_voxels(
         "modulation_freq": float(cfg.modulation_freq),
         "modulation_lobes": int(cfg.modulation_lobes),
         "line_stride": int(cfg.line_stride),
+        "boundary_lines_x": int(cfg.boundary_lines_x),
+        "boundary_lines_y": int(cfg.boundary_lines_y),
         "point_stride": int(cfg.point_stride),
         "spine_samples": int(cfg.spine_samples),
+        "spine_smooth": float(cfg.spine_smooth),
         "volume_voxels": float(vol),
         "volume_mesh": float(tm.volume) if tm.is_volume else 0.0,
         "faces": int(len(tm.faces)),

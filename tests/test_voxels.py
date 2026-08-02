@@ -44,11 +44,52 @@ def test_smooth_resample_differs_from_linear_on_bends() -> None:
     assert float(np.linalg.norm(smooth[-1] - pts[-1])) < 1e-6
     max_diff = float(np.linalg.norm(smooth - linear, axis=1).max())
     assert max_diff > 0.1
+    # Extra smoothing rounds the kink further than pure interpolation
+    rounder = _smooth_resample_polyline(pts, n, smooth=5.0)
+    assert float(np.linalg.norm(rounder - linear, axis=1).max()) > max_diff * 0.5
     # Short polyline falls back to linear
     short = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]])
     fallback = _smooth_resample_polyline(short, 8)
     assert fallback.shape == (8, 3)
     assert np.allclose(fallback, _resample_polyline(short, 8))
+
+
+def test_preview_respects_voxel_size_facet_density() -> None:
+    """Smaller voxel_size must produce a denser preview tube mesh."""
+    result = run_pipeline(
+        PipelineConfig(
+            grid_size_x=10,
+            grid_size_y=8,
+            amplitude_sw=1.0,
+            wavelength_sw=20.0,
+            lines_x=True,
+            lines_y=False,
+        ),
+        verbose=False,
+    )
+    coarse = preview_pipe_mesh(
+        result,
+        VoxelPipeConfig(
+            voxel_size=2.0,
+            pipe_radius=1.2,
+            line_stride=4,
+            point_stride=2,
+            spine_samples=16,
+            spine_smooth=1.0,
+        ),
+    )
+    fine = preview_pipe_mesh(
+        result,
+        VoxelPipeConfig(
+            voxel_size=0.4,
+            pipe_radius=1.2,
+            line_stride=4,
+            point_stride=2,
+            spine_samples=16,
+            spine_smooth=1.0,
+        ),
+    )
+    assert len(fine.faces) > len(coarse.faces)
 
 
 def test_save_model_params_writes_voxel_nested(tmp_path: Path) -> None:
@@ -103,10 +144,53 @@ def test_polyline_segments_respect_line_stride() -> None:
         verbose=False,
     )
     all_segs = polyline_segments_from_result(result, line_stride=1, point_stride=1)
-    half = polyline_segments_from_result(result, line_stride=2, point_stride=1)
+    half = polyline_segments_from_result(
+        result, line_stride=2, point_stride=1, boundary_lines=0
+    )
     assert len(all_segs) == 6 + 8
     assert len(half) == 3 + 4
     assert all(len(s) >= 2 for s in half)
+
+
+def test_boundary_lines_keep_first_and_last() -> None:
+    """First/last N lines per direction survive even with a large stride."""
+    from cymatics_geometry.lines import stride_indices_with_boundary
+
+    assert stride_indices_with_boundary(6, stride=3, boundary=0) == [0, 3]
+    assert stride_indices_with_boundary(6, stride=3, boundary=1) == [0, 3, 5]
+    assert stride_indices_with_boundary(6, stride=3, boundary=2) == [0, 1, 3, 4, 5]
+    # Negative removes ends from the strided set
+    assert stride_indices_with_boundary(6, stride=1, boundary=-1) == [1, 2, 3, 4]
+
+    result = run_pipeline(
+        PipelineConfig(
+            grid_size_x=8,
+            grid_size_y=6,
+            lines_x=True,
+            lines_y=True,
+            amplitude_sw=1.0,
+            wavelength_sw=20.0,
+        ),
+        verbose=False,
+    )
+    rim = polyline_segments_from_result(
+        result,
+        line_stride=2,
+        point_stride=1,
+        boundary_lines_x=1,
+        boundary_lines_y=1,
+    )
+    # X-rows (6): stride {0,2,4} ∪ {0,5} → 4; Y-cols (8): {0,2,4,6} ∪ {0,7} → 5
+    assert len(rim) == 4 + 5
+
+    via_cfg = polyline_segments_from_result(
+        result,
+        line_stride=2,
+        point_stride=1,
+        boundary_lines_x=VoxelPipeConfig().boundary_lines_x,
+        boundary_lines_y=VoxelPipeConfig().boundary_lines_y,
+    )
+    assert len(via_cfg) == len(rim)
 
 
 def test_pipe_lines_to_voxels_produces_mesh(tmp_path: Path) -> None:

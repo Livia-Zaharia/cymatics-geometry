@@ -1,6 +1,6 @@
 # cymatics-geometry
 
-Plane-of-points geometry displaced by **multi-source cymatics wave interference**, optionally **mapped onto cylinder / cone / frustum**, then reconnected into **parallel U/V grid lines**, and optionally **piped into 3D-printable voxel solids (STL)**.
+Plane-of-points geometry displaced by **multi-source cymatics wave interference**, optionally **mapped onto cylinder / cone / frustum / variable cylinder / bead**, then reconnected into **parallel U/V grid lines**, and optionally **piped into 3D-printable voxel solids (STL)**.
 
 Built in the same spirit as [`enhancement-geometry`](https://github.com/Livia-Zaharia/enhancement-geometry) (the Voronoi / lofted-cylinder library used by [Materialized Enhancements](https://github.com/Livia-Zaharia/materialized-enchancements)): typed `PipelineConfig`, staged `run_pipeline`, PyVista visualization, Typer CLI, and a Jupyter notebook for debugging.
 
@@ -12,13 +12,13 @@ Author: **Livia Zaharia**
 
 ## Idea
 
-1. Deploy points on an **X×Y grid** (default **100×100**, X and Y set independently)
+1. Deploy points on an **X×Y grid** (default **100×100**, X and Y set independently; notebook sliders allow up to **500**)
 2. Put wave sources at the **four corners** and optional **mid-edge** points (S/E/N/W)
 3. Control per-source **amplitude**, **λ**, and **release** (0–150 world units, 1:1)
 4. Move points in **Z** by wave interference; **release** applies a radial **XY** shockwave with optional **cloth** springs
-5. **Map** the same UV lattice + local offsets onto a target shape (`plane` / `cylinder` / `cone` / `frustum`)
+5. **Map** the same UV lattice + local offsets onto a target shape (`plane` / `cylinder` / `cone` / `frustum` / `variable_cylinder` / `bead`)
 6. Reconnect as **parallel U-row and V-column lines** (either direction can be turned off)
-7. **Voxel pipe** (optional) — cubic-spline-smooth each line spine, then sweep solid rods / hollow pipes with PicoPie voxels, modulate the radius, mesh, export **STL**
+7. **Voxel pipe** (optional) — cubic-spline-smooth each line spine (`spine_smooth`), densify by `voxel_size`, sweep solid rods / hollow pipes with PicoPie voxels, modulate the radius, mesh, export **STL**
 
 Waves always compute on the flat plane. Mapping reuses the plane-frame offset `δ = (dx, dy, dz)` in the target surface’s local frame `(Tu, Tv, N)`:
 
@@ -89,7 +89,7 @@ pipe = PipelineConfig(
 )
 result = run_pipeline(pipe)
 voxel = VoxelPipeConfig(
-    voxel_size=0.6,       # smaller → smoother / slower
+    voxel_size=0.6,       # smaller → smoother / denser spines
     pipe_radius=1.2,      # outer tube radius
     inner_radius=0.0,     # 0 = solid rod; >0 = hollow pipe
     modulation_amp=0.25,  # surface ripple strength
@@ -98,6 +98,7 @@ voxel = VoxelPipeConfig(
     line_stride=2,        # every N-th grid line
     point_stride=2,       # every N-th sample on a line
     spine_samples=40,     # cubic-spline samples along each bend
+    spine_smooth=1.5,     # round sharp grid kinks on the lines
 )
 
 solid, path = pipe_and_export_stl(result, "exports", voxel)
@@ -107,7 +108,7 @@ print(path, solid.volume, solid.is_watertight)
 save_model_params(pipe, voxel, "configs")
 ```
 
-Spines are **cubic-spline** resampled to `spine_samples` after line/point stride (linear fallback when a segment has fewer than 4 distinct points). That applies to both `preview_pipe_mesh` and `pipe_lines_to_voxels` / STL.
+Spines are **cubic-spline** resampled (with optional `spine_smooth`) after line/point stride; sample count also rises when `voxel_size` is small (linear fallback when a segment has fewer than 4 distinct points). That applies to both `preview_pipe_mesh` and `pipe_lines_to_voxels` / STL.
 
 ---
 
@@ -119,12 +120,23 @@ uv run jupyter lab notebooks/cymatics_plane_line.ipynb
 
 Interactive Plotly viewer (right panel, top → bottom):
 
-- **Display** — `line color` (`difference` / `uniform white`) + X/Y line toggles
-- **Shape map** — plane / cylinder / cone / frustum + shape params
+- **Display** — saved-config **Load** · `line color` · X/Y toggles · **line step** · **keep X / keep Y** (signed: `+N` keep ends, `−N` remove ends)
+- **Sources** — amp may be **negative** (flips wave / Z direction)
+- **Shape map** — plane / cylinder / cone / frustum / **variable cylinder** / **bead** + shape params
 - **Sources** — per-source amp / λ / release (+ sync checkboxes)
 - **Mirroring** — `corners` / `mids` / `all` / `clear`: copies amp·λ·release from the first selected source (order SW→…→W). Sources **not** in the new selection reset to **0**; `clear` zeros everything
-- **Global** — time, decay, cloth, grid resolution
-- **Voxel print** — pipe / voxel / modulation / stride controls + **Preview solid** (opaque shaded tubes, wireframe hidden) / **Export STL** / **Save params** (writes pipeline + nested `voxel` JSON under `configs/`)
+- **Global** — time, decay, cloth, grid X/Y (**20–500**)
+- **Voxel print** — pipe / voxel / smooth / modulation / stride controls + **Preview solid** (lofted tubes; `voxel` changes facet density and refreshes the overlay) / **Export STL** / **Save params**
+
+Every numeric slider has a **side number box** — click and type for precise values (linked both ways with the slider).
+
+### Variable cylinder
+
+Three circle radii along the axis (begin / middle / end), total length, and middle station `t ∈ [0.1, 0.9]` (0 = begin, 1 = end; extremes are clamped so the middle circle never sits flush with either end). Radius is piecewise-linear between the three stations.
+
+### Bead
+
+A sphere of controllable **diameter**, with the top and bottom cut off by planar slices. The **bottom** and **top** slice circle radii are independent (each clamped to ≤ sphere radius). Height follows from the geometry.
 
 Re-run the import cell after pulling library changes so the notebook picks up `src/`.
 
@@ -211,6 +223,40 @@ uv run cymatics generate \
   --screenshot exports/frustum_preview.png
 ```
 
+### Variable cylinder (three radii + middle station)
+
+```bash
+uv run cymatics generate \
+  --grid-x 80 --grid-y 80 \
+  --amp-sw 1.0 --amp-se 0.85 --amp-ne 0.55 --amp-nw 0.9 \
+  --wavelength 25 \
+  --shape variable_cylinder \
+  --var-cyl-r-begin 20 \
+  --var-cyl-r-middle 32 \
+  --var-cyl-r-end 12 \
+  --var-cyl-length 100 \
+  --var-cyl-middle 0.4 \
+  --line-color difference \
+  --no-viewer \
+  --screenshot exports/variable_cylinder_preview.png
+```
+
+### Bead (sliced sphere)
+
+```bash
+uv run cymatics generate \
+  --grid-x 80 --grid-y 80 \
+  --amp-sw 1.0 --amp-se 0.85 --amp-ne 0.55 --amp-nw 0.9 \
+  --wavelength 25 \
+  --shape bead \
+  --bead-diameter 40 \
+  --bead-bottom-radius 10 \
+  --bead-top-radius 16 \
+  --line-color difference \
+  --no-viewer \
+  --screenshot exports/bead_preview.png
+```
+
 ### Release + cloth (XY shockwave on the plane, then mapped)
 
 ```bash
@@ -261,6 +307,7 @@ uv run cymatics stl \
   --mod-amp 0.25 --mod-freq 3 --mod-lobes 6 \
   --line-stride 2 \
   --spine-samples 40 \
+  --spine-smooth 1.5 \
   --export-dir exports \
   --save-config
 ```
@@ -277,10 +324,13 @@ uv run cymatics stl -c configs/<pipeline-only>.json --voxel-size 0.5 --pipe-radi
 
 | Flag | Meaning |
 |------|---------|
-| `--shape` | `plane` \| `cylinder` \| `cone` \| `frustum` |
+| `--shape` | `plane` \| `cylinder` \| `cone` \| `frustum` \| `variable_cylinder` \| `bead` |
 | `--cylinder-diameter` / `--cylinder-length` | cylinder params |
 | `--cone-height` / `--cone-base-radius` | cone params |
 | `--frustum-height` / `--frustum-base-diameter` / `--frustum-top-diameter` | frustum params |
+| `--var-cyl-r-begin` / `--var-cyl-r-middle` / `--var-cyl-r-end` | variable-cylinder circle radii |
+| `--var-cyl-length` / `--var-cyl-middle` | variable-cylinder length + middle station ∈ [0.1, 0.9] |
+| `--bead-diameter` / `--bead-bottom-radius` / `--bead-top-radius` | bead sphere + independent slice radii |
 | `--line-color` | `difference` (Z coolwarm) \| `white` |
 | `--lines-x` / `--no-lines-x` | U-parallel lines |
 | `--lines-y` / `--no-lines-y` | V-parallel lines |
@@ -292,11 +342,13 @@ uv run cymatics stl -c configs/<pipeline-only>.json --voxel-size 0.5 --pipe-radi
 | `-c` / `--config` | load pipeline JSON (and nested `voxel` for `stl` when present) |
 | `--save-config` / `--no-save-config` | snapshot used settings (`generate` → pipeline; `stl` → pipeline+voxel) |
 | `cymatics stl` | pipe lines → cubic-spline spines → PicoPie voxels → STL |
-| `--voxel-size` | OpenVDB cell size (smoothness vs speed) |
+| `--voxel-size` | OpenVDB cell size (also densifies spines; smaller = smoother/slower) |
 | `--pipe-radius` / `--inner-radius` | outer / hollow bore |
 | `--mod-amp` / `--mod-freq` / `--mod-lobes` | surface modulation |
 | `--line-stride` / `--point-stride` | thin the lattice for faster builds |
+| `--boundary-lines-x` / `--boundary-lines-y` | signed end treatment per axis (`+N` keep, `−N` remove) |
 | `--spine-samples` | cubic-spline samples along each bend |
+| `--spine-smooth` | line-smoothing strength before piping (0 = interpolate through samples) |
 
 ---
 
@@ -304,15 +356,19 @@ uv run cymatics stl -c configs/<pipeline-only>.json --voxel-size 0.5 --pipe-radi
 
 | Parameter | What it does in practice |
 |-----------|--------------------------|
-| `voxel_size` | Edge length of one voxel. Smaller → smoother surface and sharper modulation, but slower and heavier STL. Preview at ~0.6–1.2; print at ~0.2–0.5. |
+| `voxel_size` | Edge length of one voxel. Smaller → smoother surface, denser spines, and (in the notebook preview) more ring facets. Preview at ~0.6–1.2; print at ~0.2–0.5. |
 | `pipe_radius` | Outer radius of the tube swept along each line. Keep thick enough for your nozzle / wall after unit scaling. |
 | `inner_radius` | Hollow bore. `0` = solid rod (strongest / fastest). Must stay below `pipe_radius`; wall ≈ outer − inner should be ≥ ~2× `voxel_size`. |
 | `modulation_amp` | How far the outer radius ripples in/out (world units). `0` = smooth constant tube. |
 | `modulation_freq` | Number of full radius waves along each line’s length. |
 | `modulation_lobes` | Angular flutes around the circumference (`0` = round; `6` ≈ hexagonal ripple). |
 | `line_stride` | Keep every N-th grid line. `1` = dense lattice; `2+` = lighter / faster. |
+| `boundary_lines_x` / `boundary_lines_y` | Signed end treatment per axis. `+N` keep first/last N; `−N` remove first/last \|N\|; `0` = stride only. |
 | `point_stride` | Keep every N-th sample along a polyline before building the spine. |
 | `spine_samples` | Cubic-spline arc-length samples for each spine (preview + PicoPie). Higher → smoother bends; cost grows with samples × lines. |
+| `spine_smooth` | Relative smoothing before piping. `0` interpolates through grid samples (can keep kinks); higher values round sharp corners on the **lines** themselves. |
+
+Preview tubes are **lofted** along parallel-transport frames (not stacked short cylinders), so segment seams are much less visible. `voxel_size` also drives preview facet density; with a solid overlay open, changing voxel sliders refreshes the preview automatically.
 
 Library entry points: `VoxelPipeConfig`, `VoxelPipeConfig.from_dict`, `pipe_lines_to_voxels`, `export_stl`, `pipe_and_export_stl` in `cymatics_geometry.voxels`; `save_model_params` / `load_voxel_params` in `cymatics_geometry.config` (also re-exported from the package root).
 
@@ -342,7 +398,7 @@ cymatics-geometry/
 │   ├── config.py          # PipelineConfig + save/load model params JSON
 │   ├── grid.py            # square grid + source positions
 │   ├── waves.py           # multi-source interference + release/cloth
-│   ├── shapes.py          # plane → cylinder/cone/frustum mapping
+│   ├── shapes.py          # plane → cylinder/cone/frustum/variable_cylinder/bead mapping
 │   ├── lines.py           # grid U/V parallel lines
 │   ├── voxels.py          # spline spines + PicoPie pipe / STL
 │   ├── pipeline.py        # run_pipeline + exports
@@ -357,7 +413,7 @@ cymatics-geometry/
 
 | | enhancement-geometry | cymatics-geometry |
 |--|--|--|
-| Base form | stacked circles → lofted half-cylinder | flat square point plane → optional cylinder/cone/frustum |
+| Base form | stacked circles → lofted half-cylinder | flat square point plane → optional cylinder/cone/frustum/variable cylinder |
 | Field | Voronoi cells on lofted surface | circular waves from up to 8 sources |
 | Output | watertight printable shell (STL) | lines (OBJ/PLY) **and** voxel-piped solids (STL) |
 | Controls | radii, spacing, seed, extrusion | amps, λ, release, cloth, shape params, voxel pipe |

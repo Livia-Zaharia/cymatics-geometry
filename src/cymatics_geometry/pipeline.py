@@ -85,6 +85,14 @@ def _shape_params_from_config(config: PipelineConfig) -> ShapeParams:
         frustum_height=float(config.frustum_height),
         frustum_base_diameter=float(config.frustum_base_diameter),
         frustum_top_diameter=float(config.frustum_top_diameter),
+        variable_cylinder_radius_begin=float(config.variable_cylinder_radius_begin),
+        variable_cylinder_radius_middle=float(config.variable_cylinder_radius_middle),
+        variable_cylinder_radius_end=float(config.variable_cylinder_radius_end),
+        variable_cylinder_length=float(config.variable_cylinder_length),
+        variable_cylinder_middle=float(config.variable_cylinder_middle),
+        bead_diameter=float(config.bead_diameter),
+        bead_bottom_radius=float(config.bead_bottom_radius),
+        bead_top_radius=float(config.bead_top_radius),
     )
 
 
@@ -176,6 +184,9 @@ def run_pipeline(
         pattern=config.line_pattern,
         lines_x=bool(config.lines_x),
         lines_y=bool(config.lines_y),
+        line_stride=int(config.line_stride),
+        boundary_lines_x=int(config.boundary_lines_x),
+        boundary_lines_y=int(config.boundary_lines_y),
     )
     length = polyline_length(polyline)
     if verbose:
@@ -183,7 +194,9 @@ def run_pipeline(
             f"Stage 5 — line geometry: {len(polyline)} vertices, "
             f"length={length:.3f}, cells={line_mesh.n_cells} "
             f"(pattern={config.line_pattern}, "
-            f"X={config.lines_x}, Y={config.lines_y})"
+            f"X={config.lines_x}, Y={config.lines_y}, "
+            f"stride={config.line_stride}, "
+            f"keepX={config.boundary_lines_x}, keepY={config.boundary_lines_y})"
         )
 
     stats = {
@@ -214,6 +227,9 @@ def run_pipeline(
         "line_pattern": config.line_pattern,
         "lines_x": bool(config.lines_x),
         "lines_y": bool(config.lines_y),
+        "line_stride": int(config.line_stride),
+        "boundary_lines_x": int(config.boundary_lines_x),
+        "boundary_lines_y": int(config.boundary_lines_y),
         "shape": str(config.shape),
     }
 

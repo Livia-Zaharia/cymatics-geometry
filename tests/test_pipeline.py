@@ -145,6 +145,82 @@ def test_grid_lines_have_both_directions() -> None:
     assert y_only.line_mesh.n_cells == 5
 
 
+def test_line_stride_and_boundary_lines_thin_display() -> None:
+    """line_stride thins; signed keep X/Y keep or remove ends per direction."""
+    full = run_pipeline(
+        PipelineConfig(grid_size_x=8, grid_size_y=6, line_pattern="grid"),
+        verbose=False,
+    )
+    assert full.line_mesh.n_cells == 6 + 8
+
+    thinned = run_pipeline(
+        PipelineConfig(
+            grid_size_x=8,
+            grid_size_y=6,
+            line_pattern="grid",
+            line_stride=2,
+            boundary_lines_x=0,
+            boundary_lines_y=0,
+        ),
+        verbose=False,
+    )
+    # X-rows 6 → 3; Y-cols 8 → 4
+    assert thinned.line_mesh.n_cells == 3 + 4
+
+    with_rim = run_pipeline(
+        PipelineConfig(
+            grid_size_x=8,
+            grid_size_y=6,
+            line_pattern="grid",
+            line_stride=2,
+            boundary_lines_x=1,
+            boundary_lines_y=1,
+        ),
+        verbose=False,
+    )
+    # X: {0,2,4}∪{0,5}=4; Y: {0,2,4,6}∪{0,7}=5
+    assert with_rim.line_mesh.n_cells == 4 + 5
+    assert with_rim.line_mesh.n_cells > thinned.line_mesh.n_cells
+
+    # Negative keep X removes first/last from X-rows only
+    drop_x = run_pipeline(
+        PipelineConfig(
+            grid_size_x=8,
+            grid_size_y=6,
+            line_pattern="grid",
+            line_stride=1,
+            boundary_lines_x=-1,
+            boundary_lines_y=0,
+        ),
+        verbose=False,
+    )
+    # X-rows 6 − 2 ends = 4; Y-cols unchanged 8
+    assert drop_x.line_mesh.n_cells == 4 + 8
+
+
+def test_negative_amplitude_flips_displacement() -> None:
+    pos = run_pipeline(
+        PipelineConfig(
+            grid_size_x=12,
+            grid_size_y=12,
+            amplitude_sw=1.5,
+            wavelength_sw=20.0,
+        ),
+        verbose=False,
+    )
+    neg = run_pipeline(
+        PipelineConfig(
+            grid_size_x=12,
+            grid_size_y=12,
+            amplitude_sw=-1.5,
+            wavelength_sw=20.0,
+        ),
+        verbose=False,
+    )
+    assert np.allclose(neg.displacement, -pos.displacement)
+    assert neg.config.active_source_labels() == ["SW"]
+
+
 def test_per_source_wavelength_changes_field() -> None:
     base = run_pipeline(
         PipelineConfig(
@@ -430,3 +506,96 @@ def test_cone_and_frustum_map_offsets_in_local_frame() -> None:
     assert tip_mask.any()
     tip_r = np.linalg.norm(cone.shape_base_points[tip_mask][:, [0, 2]], axis=1)
     assert np.allclose(tip_r, 0.0, atol=1e-6)
+
+
+def test_bead_slice_radii_independent() -> None:
+    """Sphere with different top/bottom slice radii maps onto a bead surface."""
+    from cymatics_geometry.shapes import _bead_slice_heights
+
+    r, r0, r1, z0, z1 = _bead_slice_heights(
+        diameter=40.0, bottom_radius=8.0, top_radius=15.0
+    )
+    assert abs(r - 20.0) < 1e-9
+    assert abs(r0 - 8.0) < 1e-9
+    assert abs(r1 - 15.0) < 1e-9
+    assert z0 < 0.0 < z1
+    assert abs(r0 * r0 + z0 * z0 - r * r) < 1e-6
+    assert abs(r1 * r1 + z1 * z1 - r * r) < 1e-6
+
+    result = run_pipeline(
+        PipelineConfig(
+            grid_size_x=12,
+            grid_size_y=10,
+            amplitude_sw=1.0,
+            wavelength_sw=25.0,
+            shape="bead",
+            bead_diameter=40.0,
+            bead_bottom_radius=8.0,
+            bead_top_radius=15.0,
+        ),
+        verbose=False,
+    )
+    assert len(result.shape_points) == 12 * 10
+    y = result.shape_base_points[:, 1]
+    assert float(y.min()) == 0.0
+    # Bottom / top rings match the requested slice radii
+    begin = result.shape_base_points[np.isclose(y, 0.0)]
+    end = result.shape_base_points[np.isclose(y, float(y.max()))]
+    begin_r = np.linalg.norm(begin[:, [0, 2]], axis=1)
+    end_r = np.linalg.norm(end[:, [0, 2]], axis=1)
+    assert np.allclose(begin_r, 8.0, atol=1e-4)
+    assert np.allclose(end_r, 15.0, atol=1e-4)
+    # Bulge of the sphere exceeds both slice radii
+    all_r = np.linalg.norm(result.shape_base_points[:, [0, 2]], axis=1)
+    assert float(all_r.max()) > max(8.0, 15.0) + 0.5
+
+
+def test_variable_cylinder_three_radii_and_middle_clamp() -> None:
+    from cymatics_geometry.shapes import (
+        _clamp_variable_cylinder_middle,
+        _variable_cylinder_radius_profile,
+    )
+
+    assert _clamp_variable_cylinder_middle(0.0) == 0.1
+    assert _clamp_variable_cylinder_middle(1.0) == 0.9
+    assert _clamp_variable_cylinder_middle(0.5) == 0.5
+
+    v = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
+    radius, _dr = _variable_cylinder_radius_profile(
+        v,
+        radius_begin=10.0,
+        radius_middle=30.0,
+        radius_end=5.0,
+        middle_t=0.5,
+    )
+    assert abs(float(radius[0]) - 10.0) < 1e-9
+    assert abs(float(radius[2]) - 30.0) < 1e-9
+    assert abs(float(radius[-1]) - 5.0) < 1e-9
+
+    result = run_pipeline(
+        PipelineConfig(
+            grid_size_x=12,
+            grid_size_y=10,
+            amplitude_sw=1.0,
+            wavelength_sw=25.0,
+            shape="variable_cylinder",
+            variable_cylinder_radius_begin=10.0,
+            variable_cylinder_radius_middle=25.0,
+            variable_cylinder_radius_end=8.0,
+            variable_cylinder_length=80.0,
+            variable_cylinder_middle=0.05,  # clamped to 0.1 at map time
+        ),
+        verbose=False,
+    )
+    assert len(result.shape_points) == 12 * 10
+    assert result.line_mesh.n_cells == 10 + 12
+    y = result.shape_base_points[:, 1]
+    assert float(y.min()) == 0.0
+    assert float(y.max()) == 80.0
+    # Begin / end rings match the requested radii
+    begin = result.shape_base_points[np.isclose(y, 0.0)]
+    end = result.shape_base_points[np.isclose(y, 80.0)]
+    begin_r = np.linalg.norm(begin[:, [0, 2]], axis=1)
+    end_r = np.linalg.norm(end[:, [0, 2]], axis=1)
+    assert np.allclose(begin_r, 10.0, atol=1e-5)
+    assert np.allclose(end_r, 8.0, atol=1e-5)

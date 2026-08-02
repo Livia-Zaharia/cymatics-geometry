@@ -14,7 +14,13 @@ from matplotlib.colors import Normalize
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 — registers 3D projection
 from plotly.graph_objs import FigureWidget
 
-from cymatics_geometry.config import PipelineConfig, save_model_params
+from cymatics_geometry.config import (
+    PipelineConfig,
+    list_saved_configs,
+    load_pipeline_config,
+    load_voxel_params,
+    save_model_params,
+)
 from cymatics_geometry.grid import SOURCE_LABELS, grid_shape
 from cymatics_geometry.pipeline import PipelineResult, run_pipeline
 from cymatics_geometry.shapes import ShapeParams, shape_boundary_polyline, shape_bounds
@@ -525,6 +531,43 @@ def _shape_params_from_result(result: PipelineResult) -> ShapeParams:
         frustum_height=float(cfg.frustum_height),
         frustum_base_diameter=float(cfg.frustum_base_diameter),
         frustum_top_diameter=float(cfg.frustum_top_diameter),
+        variable_cylinder_radius_begin=float(cfg.variable_cylinder_radius_begin),
+        variable_cylinder_radius_middle=float(cfg.variable_cylinder_radius_middle),
+        variable_cylinder_radius_end=float(cfg.variable_cylinder_radius_end),
+        variable_cylinder_length=float(cfg.variable_cylinder_length),
+        variable_cylinder_middle=float(cfg.variable_cylinder_middle),
+        bead_diameter=float(cfg.bead_diameter),
+        bead_bottom_radius=float(cfg.bead_bottom_radius),
+        bead_top_radius=float(cfg.bead_top_radius),
+    )
+
+
+def _slider_with_number(slider: object) -> object:
+    """Pair a slider with an editable number box (type precise values).
+
+    The slider readout stays clickable; the side box is a second, explicit
+    keyboard entry path. Values stay linked both ways.
+    """
+    from ipywidgets import FloatText, HBox, IntSlider, IntText, Layout, jslink
+
+    if isinstance(slider, IntSlider):
+        box = IntText(
+            value=int(slider.value),
+            layout=Layout(width="70px", height="28px"),
+        )
+    else:
+        step = getattr(slider, "step", 0.1)
+        box = FloatText(
+            value=float(slider.value),
+            step=float(step) if step is not None else 0.1,
+            layout=Layout(width="70px", height="28px"),
+        )
+    jslink((slider, "value"), (box, "value"))
+    # Slider takes most of the row; number box on the right for typing
+    slider.layout = Layout(width="78%", height="32px")
+    return HBox(
+        [slider, box],
+        layout=Layout(width="100%", align_items="center", margin="0 0 2px 0"),
     )
 
 
@@ -892,7 +935,7 @@ def show_interactive_line_viewer(
     base = config or PipelineConfig(grid_size_x=60, grid_size_y=60)
 
     src_style = {"description_width": "58px"}
-    global_style = {"description_width": "72px"}
+    global_style = {"description_width": "78px"}
     full_slider = Layout(width="96%", height="32px")
 
     source_widgets: dict[str, dict] = {}
@@ -908,7 +951,7 @@ def show_interactive_line_viewer(
         )
         amp = FloatSlider(
             value=0.0,
-            min=0.0,
+            min=-float(amplitude_max),
             max=float(amplitude_max),
             step=0.01,
             description="amp",
@@ -917,6 +960,7 @@ def show_interactive_line_viewer(
             readout_format=".2f",
             style=src_style,
             layout=full_slider,
+            tooltip="Amplitude (negative flips wave direction / sign of Z)",
         )
         wl = FloatSlider(
             value=0.0,
@@ -960,7 +1004,12 @@ def show_interactive_line_viewer(
             ),
         )
         block = VBox(
-            [header, amp, wl, rel],
+            [
+                header,
+                _slider_with_number(amp),
+                _slider_with_number(wl),
+                _slider_with_number(rel),
+            ],
             layout=Layout(
                 width="100%",
                 border="1px solid #d1d5db",
@@ -1009,19 +1058,19 @@ def show_interactive_line_viewer(
         layout=full_slider,
     )
     grid_x = IntSlider(
-        value=min(int(base.grid_size_x), 80),
+        value=min(max(int(base.grid_size_x), 20), 500),
         min=20,
-        max=100,
-        step=10,
+        max=500,
+        step=5,
         description="grid X",
         style=global_style,
         layout=full_slider,
     )
     grid_y = IntSlider(
-        value=min(int(base.grid_size_y), 80),
+        value=min(max(int(base.grid_size_y), 20), 500),
         min=20,
-        max=100,
-        step=10,
+        max=500,
+        step=5,
         description="grid Y",
         style=global_style,
         layout=full_slider,
@@ -1039,6 +1088,50 @@ def show_interactive_line_viewer(
         indent=False,
         layout=Layout(width="160px"),
     )
+    # Line thinning lives next to X/Y so it affects the drawn grid immediately.
+    # continuous_update=False avoids thrashing large grids while dragging.
+    _base_stride = max(1, int(getattr(base, "line_stride", 1) or 1))
+    _base_keep_x = int(getattr(base, "boundary_lines_x", getattr(base, "boundary_lines", 0)))
+    _base_keep_y = int(getattr(base, "boundary_lines_y", getattr(base, "boundary_lines", 0)))
+    line_stride_sl = IntSlider(
+        value=_base_stride,
+        min=1,
+        max=20,
+        step=1,
+        description="line step",
+        style=global_style,
+        layout=full_slider,
+        continuous_update=False,
+        tooltip="Keep every N-th grid line (1 = all). Raise this to thin the lattice.",
+    )
+    boundary_lines_x_sl = IntSlider(
+        value=_base_keep_x,
+        min=-20,
+        max=20,
+        step=1,
+        description="keep X",
+        style=global_style,
+        layout=full_slider,
+        continuous_update=False,
+        tooltip=(
+            "X-rows ends (signed): +N keep first/last N, −N remove first/last |N|, "
+            "0 = stride only."
+        ),
+    )
+    boundary_lines_y_sl = IntSlider(
+        value=_base_keep_y,
+        min=-20,
+        max=20,
+        step=1,
+        description="keep Y",
+        style=global_style,
+        layout=full_slider,
+        continuous_update=False,
+        tooltip=(
+            "Y-cols ends (signed): +N keep first/last N, −N remove first/last |N|, "
+            "0 = stride only."
+        ),
+    )
     line_color_dd = Dropdown(
         options=[
             ("difference (by Z)", "difference"),
@@ -1055,6 +1148,8 @@ def show_interactive_line_viewer(
             ("cylinder", "cylinder"),
             ("cone", "cone"),
             ("frustum (truncated cone)", "frustum"),
+            ("variable cylinder (3 radii)", "variable_cylinder"),
+            ("bead (sliced sphere)", "bead"),
         ],
         value=str(getattr(base, "shape", "plane") or "plane"),
         description="shape",
@@ -1131,6 +1226,90 @@ def show_interactive_line_viewer(
         style=global_style,
         layout=full_slider,
     )
+    vc_r0 = FloatSlider(
+        value=float(base.variable_cylinder_radius_begin),
+        min=0.5,
+        max=80.0,
+        step=0.5,
+        description="begin R",
+        readout_format=".1f",
+        style=global_style,
+        layout=full_slider,
+    )
+    vc_r1 = FloatSlider(
+        value=float(base.variable_cylinder_radius_middle),
+        min=0.5,
+        max=80.0,
+        step=0.5,
+        description="mid R",
+        readout_format=".1f",
+        style=global_style,
+        layout=full_slider,
+    )
+    vc_r2 = FloatSlider(
+        value=float(base.variable_cylinder_radius_end),
+        min=0.5,
+        max=80.0,
+        step=0.5,
+        description="end R",
+        readout_format=".1f",
+        style=global_style,
+        layout=full_slider,
+    )
+    vc_len = FloatSlider(
+        value=float(base.variable_cylinder_length),
+        min=10.0,
+        max=200.0,
+        step=1.0,
+        description="var len",
+        readout_format=".0f",
+        style=global_style,
+        layout=full_slider,
+    )
+    vc_mid = FloatSlider(
+        value=float(np.clip(base.variable_cylinder_middle, 0.1, 0.9)),
+        min=0.1,
+        max=0.9,
+        step=0.01,
+        description="mid t",
+        readout_format=".2f",
+        style=global_style,
+        layout=full_slider,
+        tooltip="Where the middle circle sits along length (0.1–0.9; 0=begin, 1=end)",
+    )
+    bead_diam = FloatSlider(
+        value=float(base.bead_diameter),
+        min=5.0,
+        max=120.0,
+        step=1.0,
+        description="bead Ø",
+        readout_format=".0f",
+        style=global_style,
+        layout=full_slider,
+        tooltip="Sphere diameter before top/bottom slices",
+    )
+    bead_r_bot = FloatSlider(
+        value=float(base.bead_bottom_radius),
+        min=0.0,
+        max=60.0,
+        step=0.5,
+        description="bot R",
+        readout_format=".1f",
+        style=global_style,
+        layout=full_slider,
+        tooltip="Bottom slice circle radius (clamped to ≤ sphere radius)",
+    )
+    bead_r_top = FloatSlider(
+        value=float(base.bead_top_radius),
+        min=0.0,
+        max=60.0,
+        step=0.5,
+        description="top R",
+        readout_format=".1f",
+        style=global_style,
+        layout=full_slider,
+        tooltip="Top slice circle radius (clamped to ≤ sphere radius)",
+    )
     # --- Voxel pipe (3D-printable solid) ---
     voxel_size_sl = FloatSlider(
         value=0.8,
@@ -1197,16 +1376,7 @@ def show_interactive_line_viewer(
         layout=full_slider,
         tooltip=VOXEL_PARAM_HELP["modulation_lobes"],
     )
-    line_stride_sl = IntSlider(
-        value=2,
-        min=1,
-        max=10,
-        step=1,
-        description="line step",
-        style=global_style,
-        layout=full_slider,
-        tooltip=VOXEL_PARAM_HELP["line_stride"],
-    )
+    # Voxel-only thinning along each polyline (grid line pick uses Display controls)
     point_stride_sl = IntSlider(
         value=2,
         min=1,
@@ -1227,20 +1397,32 @@ def show_interactive_line_viewer(
         layout=full_slider,
         tooltip=VOXEL_PARAM_HELP["spine_samples"],
     )
+    spine_smooth_sl = FloatSlider(
+        value=1.0,
+        min=0.0,
+        max=10.0,
+        step=0.1,
+        description="smooth",
+        readout_format=".1f",
+        style=global_style,
+        layout=full_slider,
+        tooltip=VOXEL_PARAM_HELP["spine_smooth"],
+    )
     voxel_help = HTML(
         value=(
             "<div style='font-size:11px;color:#4b5563;line-height:1.35;margin:4px 0 8px 0'>"
-            "<b>Preview solid</b> — opaque shaded tubes in the 3D view "
-            "(hides the wireframe).<br>"
+            "<b>Preview solid</b> — opaque lofted tubes (hides wireframe). "
+            "<b>voxel</b> changes preview facet density too.<br>"
             "<b>Export STL</b> — real PicoPie voxels + file write (slower).<br>"
             "<b>Save params</b> — write pipeline + voxel settings to "
             "<code>configs/</code>.<br>"
-            "<b>voxel</b> — cell size for STL (smaller = smoother/slower).<br>"
+            "<b>voxel</b> — OpenVDB cell size (smaller = smoother/slower).<br>"
             "<b>radius</b> — outer tube thickness along each line.<br>"
             "<b>inner r</b> — hollow bore for STL (0 = solid rod).<br>"
             "<b>mod amp / freq / lobes</b> — STL surface ripples.<br>"
-            "<b>line/pt step</b> — skip lines/points for a lighter lattice.<br>"
-            "<b>spine n</b> — cubic-spline samples along each bend."
+            "<b>pt step</b> — skip samples along each line.<br>"
+            "<b>spine n / smooth</b> — spline samples + kink rounding on lines.<br>"
+            "<i>Grid line step / keep lines are under Display (next to X/Y).</i>"
             "</div>"
         ),
         layout=Layout(width="98%"),
@@ -1252,14 +1434,39 @@ def show_interactive_line_viewer(
     )
     status = HTML(value="", layout=Layout(width="98%"))
 
+    # Build number-linked rows once (reused when shape dropdown changes)
+    cyl_param_rows = (_slider_with_number(cyl_diam), _slider_with_number(cyl_len))
+    cone_param_rows = (_slider_with_number(cone_h), _slider_with_number(cone_r))
+    frust_param_rows = (
+        _slider_with_number(fr_h),
+        _slider_with_number(fr_base),
+        _slider_with_number(fr_top),
+    )
+    var_cyl_param_rows = (
+        _slider_with_number(vc_r0),
+        _slider_with_number(vc_r1),
+        _slider_with_number(vc_r2),
+        _slider_with_number(vc_len),
+        _slider_with_number(vc_mid),
+    )
+    bead_param_rows = (
+        _slider_with_number(bead_diam),
+        _slider_with_number(bead_r_bot),
+        _slider_with_number(bead_r_top),
+    )
+
     def _sync_shape_param_visibility(_change: object | None = None) -> None:
         kind = str(shape_dd.value)
         if kind == "cylinder":
-            shape_param_box.children = (cyl_diam, cyl_len)
+            shape_param_box.children = cyl_param_rows
         elif kind == "cone":
-            shape_param_box.children = (cone_h, cone_r)
+            shape_param_box.children = cone_param_rows
         elif kind == "frustum":
-            shape_param_box.children = (fr_h, fr_base, fr_top)
+            shape_param_box.children = frust_param_rows
+        elif kind == "variable_cylinder":
+            shape_param_box.children = var_cyl_param_rows
+        elif kind == "bead":
+            shape_param_box.children = bead_param_rows
         else:
             shape_param_box.children = ()
 
@@ -1303,6 +1510,10 @@ def show_interactive_line_viewer(
             "line_pattern": "grid",
             "lines_x": bool(lines_x_cb.value),
             "lines_y": bool(lines_y_cb.value),
+            "line_stride": int(line_stride_sl.value),
+            "boundary_lines_x": int(boundary_lines_x_sl.value),
+            "boundary_lines_y": int(boundary_lines_y_sl.value),
+            "boundary_lines": 0,
             "shape": str(shape_dd.value),
             "cylinder_diameter": float(cyl_diam.value),
             "cylinder_length": float(cyl_len.value),
@@ -1311,6 +1522,14 @@ def show_interactive_line_viewer(
             "frustum_height": float(fr_h.value),
             "frustum_base_diameter": float(fr_base.value),
             "frustum_top_diameter": float(fr_top.value),
+            "variable_cylinder_radius_begin": float(vc_r0.value),
+            "variable_cylinder_radius_middle": float(vc_r1.value),
+            "variable_cylinder_radius_end": float(vc_r2.value),
+            "variable_cylinder_length": float(vc_len.value),
+            "variable_cylinder_middle": float(np.clip(vc_mid.value, 0.1, 0.9)),
+            "bead_diameter": float(bead_diam.value),
+            "bead_bottom_radius": float(bead_r_bot.value),
+            "bead_top_radius": float(bead_r_top.value),
         }
         for key, w in source_widgets.items():
             kwargs[f"active_{key}"] = True
@@ -1327,6 +1546,10 @@ def show_interactive_line_viewer(
         return (
             "<div style='font-size:11px;color:#4b5563;margin-top:6px'>"
             f"shape=<b>{live.config.shape}</b> · lines=<b>{dirs}</b> · "
+            f"cells=<b>{live.line_mesh.n_cells}</b> · "
+            f"step=<b>{live.config.line_stride}</b> · "
+            f"keepX=<b>{live.config.boundary_lines_x}</b> · "
+            f"keepY=<b>{live.config.boundary_lines_y}</b> · "
             f"engaged={live.stats['active_labels']} · "
             f"z∈[{live.stats['displacement_min']:.2f}, {live.stats['displacement_max']:.2f}] · "
             f"XY max={live.stats.get('xy_offset_max', 0.0):.1f}"
@@ -1334,6 +1557,7 @@ def show_interactive_line_viewer(
         )
 
     def _voxel_config_from_state() -> VoxelPipeConfig:
+        # Reuse Display line step / keep lines so voxel pipes match the wireframe
         return VoxelPipeConfig(
             voxel_size=float(voxel_size_sl.value),
             pipe_radius=float(pipe_radius_sl.value),
@@ -1342,9 +1566,15 @@ def show_interactive_line_viewer(
             modulation_freq=float(mod_freq_sl.value),
             modulation_lobes=int(mod_lobes_sl.value),
             line_stride=int(line_stride_sl.value),
+            boundary_lines_x=int(boundary_lines_x_sl.value),
+            boundary_lines_y=int(boundary_lines_y_sl.value),
+            boundary_lines=0,
             point_stride=int(point_stride_sl.value),
             spine_samples=int(spine_samples_sl.value),
+            spine_smooth=float(spine_smooth_sl.value),
         )
+
+    _solid_visible = {"on": False}
 
     def _set_line_opacity(opacity: float) -> None:
         """Dim / restore wireframe traces so a solid overlay is obvious."""
@@ -1356,6 +1586,7 @@ def show_interactive_line_viewer(
             fig.data[2].opacity = op
 
     def _clear_solid_overlay() -> None:
+        _solid_visible["on"] = False
         if len(fig.data) <= 4:
             return
         # Tiny dummy triangle keeps Mesh3d alive; empty arrays often break updates
@@ -1400,6 +1631,7 @@ def show_interactive_line_viewer(
                 hoverinfo="skip",
                 showscale=False,
             )
+        _solid_visible["on"] = True
         _set_line_opacity(0.0)
 
     initial = run_pipeline(_config_from_state(), verbose=False)
@@ -1516,17 +1748,20 @@ def show_interactive_line_viewer(
         vcfg = _voxel_config_from_state()
         voxel_status.value = (
             "<div style='font-size:11px;color:#b45309'>"
-            f"Building tube preview (radius={vcfg.pipe_radius}, "
-            f"line step={vcfg.line_stride})…"
+            f"Building tube preview (voxel={vcfg.voxel_size}, "
+            f"radius={vcfg.pipe_radius}, smooth={vcfg.spine_smooth})…"
             "</div>"
         )
         try:
             mesh = preview_pipe_mesh(live, vcfg)
             _overlay_solid_mesh(mesh, label="tube preview")
+            rings = max(4, int(round(2.0 * np.pi * vcfg.pipe_radius / max(vcfg.voxel_size, 1e-6))))
+            rings = int(np.clip(rings, 4, 48))
             voxel_status.value = (
                 "<div style='font-size:11px;color:#065f46'>"
-                f"Preview tubes · faces={len(mesh.faces)} · "
-                "fast approx (Export STL runs real voxels)"
+                f"Preview · faces={len(mesh.faces)} · voxel={vcfg.voxel_size:g} "
+                f"→ ~{rings} ring facets · smooth={vcfg.spine_smooth:g} "
+                "(Export STL runs real OpenVDB voxels)"
                 "</div>"
             )
         except Exception as exc:  # noqa: BLE001 — surface errors in the widget
@@ -1579,11 +1814,149 @@ def show_interactive_line_viewer(
                 "</div>"
             )
             return
+        _refresh_config_list()
+        if config_dd.options:
+            # Select the just-saved stem if present
+            stem = path.stem
+            labels = [opt[1] if isinstance(opt, tuple) else opt for opt in config_dd.options]
+            if stem in labels:
+                config_dd.value = stem
         voxel_status.value = (
             "<div style='font-size:11px;color:#065f46'>"
             f"Params → <b>{path.as_posix()}</b>"
             "</div>"
         )
+
+    configs_dir = Path("configs")
+    config_dd = Dropdown(
+        options=[("— select saved config —", "")],
+        value="",
+        description="config",
+        style=global_style,
+        layout=Layout(width="96%"),
+    )
+    config_status = HTML(value="", layout=Layout(width="98%"))
+
+    def _refresh_config_list(_btn: object | None = None) -> None:
+        names = list_saved_configs(configs_dir) if configs_dir.exists() else []
+        opts: list[tuple[str, str]] = [("— select saved config —", "")]
+        opts.extend((n, n) for n in names)
+        prev = str(config_dd.value or "")
+        config_dd.options = opts
+        if prev and any(v == prev for _, v in opts):
+            config_dd.value = prev
+        else:
+            config_dd.value = ""
+
+    def _apply_pipeline_to_widgets(cfg: PipelineConfig) -> None:
+        """Push a loaded PipelineConfig into the UI (no rerun)."""
+        amp_lim = float(amplitude_max)
+        for key, w in source_widgets.items():
+            amp = float(getattr(cfg, f"amplitude_{key}"))
+            w["amp"].value = float(np.clip(amp, -amp_lim, amp_lim))
+            w["wavelength"].value = float(getattr(cfg, f"wavelength_{key}"))
+            w["release"].value = float(getattr(cfg, f"release_{key}"))
+            w["link"].value = False
+        time_sl.value = float(cfg.time)
+        decay_sl.value = float(cfg.decay)
+        cloth_sl.value = float(cfg.cloth)
+        grid_x.value = int(np.clip(cfg.grid_size_x, grid_x.min, grid_x.max))
+        grid_y.value = int(np.clip(cfg.grid_size_y, grid_y.min, grid_y.max))
+        lines_x_cb.value = bool(cfg.lines_x)
+        lines_y_cb.value = bool(cfg.lines_y)
+        line_stride_sl.value = int(np.clip(cfg.line_stride, line_stride_sl.min, line_stride_sl.max))
+        bx = int(cfg.boundary_lines_x)
+        by = int(cfg.boundary_lines_y)
+        if bx == 0 and by == 0 and int(cfg.boundary_lines) != 0:
+            bx = by = int(cfg.boundary_lines)
+        boundary_lines_x_sl.value = int(
+            np.clip(bx, boundary_lines_x_sl.min, boundary_lines_x_sl.max)
+        )
+        boundary_lines_y_sl.value = int(
+            np.clip(by, boundary_lines_y_sl.min, boundary_lines_y_sl.max)
+        )
+        kind = str(cfg.shape or "plane")
+        allowed = {opt[1] if isinstance(opt, tuple) else opt for opt in shape_dd.options}
+        if kind in allowed:
+            shape_dd.value = kind
+        cyl_diam.value = float(cfg.cylinder_diameter)
+        cyl_len.value = float(cfg.cylinder_length)
+        cone_h.value = float(cfg.cone_height)
+        cone_r.value = float(cfg.cone_base_radius)
+        fr_h.value = float(cfg.frustum_height)
+        fr_base.value = float(cfg.frustum_base_diameter)
+        fr_top.value = float(cfg.frustum_top_diameter)
+        vc_r0.value = float(cfg.variable_cylinder_radius_begin)
+        vc_r1.value = float(cfg.variable_cylinder_radius_middle)
+        vc_r2.value = float(cfg.variable_cylinder_radius_end)
+        vc_len.value = float(cfg.variable_cylinder_length)
+        vc_mid.value = float(np.clip(cfg.variable_cylinder_middle, 0.1, 0.9))
+        bead_diam.value = float(cfg.bead_diameter)
+        bead_r_bot.value = float(cfg.bead_bottom_radius)
+        bead_r_top.value = float(cfg.bead_top_radius)
+        _sync_shape_param_visibility()
+
+    def _apply_voxel_to_widgets(raw: dict) -> None:
+        from cymatics_geometry.voxels import VoxelPipeConfig
+
+        vcfg = VoxelPipeConfig.from_dict(raw)
+        voxel_size_sl.value = float(
+            np.clip(vcfg.voxel_size, voxel_size_sl.min, voxel_size_sl.max)
+        )
+        pipe_radius_sl.value = float(
+            np.clip(vcfg.pipe_radius, pipe_radius_sl.min, pipe_radius_sl.max)
+        )
+        inner_radius_sl.value = float(
+            np.clip(vcfg.inner_radius, inner_radius_sl.min, inner_radius_sl.max)
+        )
+        mod_amp_sl.value = float(
+            np.clip(vcfg.modulation_amp, mod_amp_sl.min, mod_amp_sl.max)
+        )
+        mod_freq_sl.value = float(
+            np.clip(vcfg.modulation_freq, mod_freq_sl.min, mod_freq_sl.max)
+        )
+        mod_lobes_sl.value = int(
+            np.clip(vcfg.modulation_lobes, mod_lobes_sl.min, mod_lobes_sl.max)
+        )
+        # Prefer pipeline line thinning when present; still restore voxel-only knobs
+        point_stride_sl.value = int(
+            np.clip(vcfg.point_stride, point_stride_sl.min, point_stride_sl.max)
+        )
+        spine_samples_sl.value = int(
+            np.clip(vcfg.spine_samples, spine_samples_sl.min, spine_samples_sl.max)
+        )
+        spine_smooth_sl.value = float(
+            np.clip(vcfg.spine_smooth, spine_smooth_sl.min, spine_smooth_sl.max)
+        )
+
+    def _on_load_config(_btn: object = None) -> None:
+        stem = str(config_dd.value or "").strip()
+        if not stem:
+            config_status.value = (
+                "<div style='font-size:11px;color:#b45309'>Pick a saved config first.</div>"
+            )
+            return
+        path = configs_dir / f"{stem}.json"
+        if not path.exists():
+            config_status.value = (
+                f"<div style='font-size:11px;color:#b91c1c'>Not found: {path}</div>"
+            )
+            return
+        _loading["on"] = True
+        cfg = load_pipeline_config(path)
+        _apply_pipeline_to_widgets(cfg)
+        voxel = load_voxel_params(path)
+        if voxel is not None:
+            _apply_voxel_to_widgets(voxel)
+        _loading["on"] = False
+        _rerun()
+        tag = "pipeline + voxel" if voxel is not None else "pipeline"
+        config_status.value = (
+            "<div style='font-size:11px;color:#065f46'>"
+            f"Loaded <b>{stem}</b> ({tag})</div>"
+        )
+
+    _refresh_config_list()
 
     btn_style = Layout(width="88px", height="28px", margin="2px")
     btn_corners = Button(description="corners", layout=btn_style)
@@ -1610,9 +1983,22 @@ def show_interactive_line_viewer(
         layout=Layout(width="120px", height="30px", margin="2px"),
         tooltip="Write pipeline + voxel settings JSON to configs/",
     )
+    btn_refresh_configs = Button(
+        description="↻ list",
+        layout=Layout(width="70px", height="30px", margin="2px"),
+        tooltip="Refresh the list of JSON files in configs/",
+    )
+    btn_load_config = Button(
+        description="Load config",
+        button_style="info",
+        layout=Layout(width="120px", height="30px", margin="2px"),
+        tooltip="Load the selected saved config into all sliders",
+    )
     btn_preview_solid.on_click(_on_preview_solid)
     btn_export_stl.on_click(_on_export_stl)
     btn_save_params.on_click(_on_save_params)
+    btn_refresh_configs.on_click(_refresh_config_list)
+    btn_load_config.on_click(_on_load_config)
 
     for w in source_widgets.values():
         for sl in (w["amp"], w["wavelength"], w["release"]):
@@ -1626,6 +2012,9 @@ def show_interactive_line_viewer(
         grid_y,
         lines_x_cb,
         lines_y_cb,
+        line_stride_sl,
+        boundary_lines_x_sl,
+        boundary_lines_y_sl,
         line_color_dd,
         shape_dd,
         cyl_diam,
@@ -1635,6 +2024,14 @@ def show_interactive_line_viewer(
         fr_h,
         fr_base,
         fr_top,
+        vc_r0,
+        vc_r1,
+        vc_r2,
+        vc_len,
+        vc_mid,
+        bead_diam,
+        bead_r_bot,
+        bead_r_top,
     ):
         w.observe(_rerun, names="value")
     shape_dd.observe(_sync_shape_param_visibility, names="value")
@@ -1652,15 +2049,36 @@ def show_interactive_line_viewer(
                 "</style>"
                 "<div style='font-size:13px;margin:0 0 6px 0'><b>Display</b></div>"
             ),
+            HTML(
+                "<div style='font-size:13px;margin:0 0 4px 0'><b>Saved configs</b> "
+                "<span style='color:#6b7280;font-size:11px'>load old runs from "
+                "<code>configs/</code></span></div>"
+            ),
+            config_dd,
+            HBox(
+                [btn_load_config, btn_refresh_configs],
+                layout=Layout(width="100%", flex_flow="row wrap", margin="2px 0 6px 0"),
+            ),
+            config_status,
             line_color_dd,
             HBox(
                 [lines_x_cb, lines_y_cb],
-                layout=Layout(width="100%", margin="4px 0 8px 0"),
+                layout=Layout(width="100%", margin="4px 0 4px 0"),
             ),
+            HTML(
+                "<div style='font-size:11px;color:#6b7280;margin:0 0 4px 0'>"
+                "<b>line step</b> thins · <b>keep X/Y</b> signed "
+                "(+ keep ends, − remove ends) · status shows cell count"
+                "</div>"
+            ),
+            _slider_with_number(line_stride_sl),
+            _slider_with_number(boundary_lines_x_sl),
+            _slider_with_number(boundary_lines_y_sl),
             HTML(
                 "<div style='font-size:13px;margin:10px 0 4px 0'><b>Shape map</b> "
                 "<span style='color:#6b7280;font-size:11px'>"
-                "waves on plane → same UV + local offsets on target"
+                "waves on plane → same UV + local offsets on target · "
+                "type values in the side boxes"
                 "</span></div>"
             ),
             shape_dd,
@@ -1669,7 +2087,7 @@ def show_interactive_line_viewer(
                 "<div style='font-size:13px;margin:14px 0 10px 0'>"
                 "<b>Sources</b> "
                 "<span style='color:#6b7280;font-size:11px'>"
-                "— titled blocks · values on the right · sync to mirror"
+                "— slider + number box · sync to mirror"
                 "</span></div>"
             ),
             *source_blocks,
@@ -1685,13 +2103,16 @@ def show_interactive_line_viewer(
                 layout=Layout(width="100%", flex_flow="row wrap"),
             ),
             HTML(
-                "<div style='font-size:13px;margin:14px 0 4px 0'><b>Global</b></div>"
+                "<div style='font-size:13px;margin:14px 0 4px 0'><b>Global</b> "
+                "<span style='color:#6b7280;font-size:11px'>"
+                "grid X/Y up to 500"
+                "</span></div>"
             ),
-            time_sl,
-            decay_sl,
-            cloth_sl,
-            grid_x,
-            grid_y,
+            _slider_with_number(time_sl),
+            _slider_with_number(decay_sl),
+            _slider_with_number(cloth_sl),
+            _slider_with_number(grid_x),
+            _slider_with_number(grid_y),
             status,
             HTML(
                 "<div style='font-size:13px;margin:16px 0 4px 0'>"
@@ -1701,15 +2122,15 @@ def show_interactive_line_viewer(
                 "</span></div>"
             ),
             voxel_help,
-            voxel_size_sl,
-            pipe_radius_sl,
-            inner_radius_sl,
-            mod_amp_sl,
-            mod_freq_sl,
-            mod_lobes_sl,
-            line_stride_sl,
-            point_stride_sl,
-            spine_samples_sl,
+            _slider_with_number(voxel_size_sl),
+            _slider_with_number(pipe_radius_sl),
+            _slider_with_number(inner_radius_sl),
+            _slider_with_number(mod_amp_sl),
+            _slider_with_number(mod_freq_sl),
+            _slider_with_number(mod_lobes_sl),
+            _slider_with_number(point_stride_sl),
+            _slider_with_number(spine_samples_sl),
+            _slider_with_number(spine_smooth_sl),
             HBox(
                 [btn_preview_solid, btn_export_stl, btn_save_params],
                 layout=Layout(width="100%", flex_flow="row wrap", margin="6px 0 0 0"),
@@ -1717,7 +2138,7 @@ def show_interactive_line_viewer(
             voxel_status,
         ],
         layout=Layout(
-            width="380px",
+            width="400px",
             height="900px",
             overflow_x="hidden",
             overflow_y="scroll",

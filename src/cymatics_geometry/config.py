@@ -106,10 +106,18 @@ class PipelineConfig:
     # Which grid directions to draw (only used when line_pattern == "grid")
     lines_x: bool = True
     lines_y: bool = True
+    # Thin grid lines: keep every N-th line (1 = all)
+    line_stride: int = 1
+    # Signed end treatment per direction (X-rows / Y-cols):
+    #   >0 keep first/last N, <0 remove first/last |N|, 0 = stride only
+    boundary_lines_x: int = 0
+    boundary_lines_y: int = 0
+    # Legacy single value (load maps onto both axes when new fields absent)
+    boundary_lines: int = 0
 
     # Target surface the plane UV + local offsets are mapped onto.
     # Waves always compute on the flat plane; shape only remaps the result.
-    # "plane" | "cylinder" | "cone" | "frustum"
+    # "plane" | "cylinder" | "cone" | "frustum" | "variable_cylinder" | "bead"
     shape: str = "plane"
     cylinder_diameter: float = 40.0
     cylinder_length: float = 100.0
@@ -118,6 +126,17 @@ class PipelineConfig:
     frustum_height: float = 100.0
     frustum_base_diameter: float = 60.0
     frustum_top_diameter: float = 20.0
+    # Variable cylinder: begin / middle / end circle radii + length + middle station
+    variable_cylinder_radius_begin: float = 20.0
+    variable_cylinder_radius_middle: float = 30.0
+    variable_cylinder_radius_end: float = 15.0
+    variable_cylinder_length: float = 100.0
+    # Where the middle circle sits along V; clamped to [0.1, 0.9] at map time
+    variable_cylinder_middle: float = 0.5
+    # Bead: sphere diameter + independent top/bottom slice circle radii
+    bead_diameter: float = 40.0
+    bead_bottom_radius: float = 12.0
+    bead_top_radius: float = 12.0
 
     @property
     def grid_size(self) -> int:
@@ -200,7 +219,7 @@ class PipelineConfig:
         for label, amp, wl, rel in zip(
             _SOURCE_LABELS, self.amplitudes, self.wavelengths, self.releases
         ):
-            if amp > 0.0 or wl > 0.0 or rel > 0.0:
+            if amp != 0.0 or wl > 0.0 or rel > 0.0:
                 engaged.append(label)
         return engaged
 
@@ -293,6 +312,14 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
             kwargs["grid_size_x"] = n
         if "grid_size_y" not in raw:
             kwargs["grid_size_y"] = n
+
+    # Old single boundary_lines → both axes when per-axis fields absent
+    if "boundary_lines" in raw:
+        legacy = int(raw["boundary_lines"])
+        if "boundary_lines_x" not in raw:
+            kwargs["boundary_lines_x"] = legacy
+        if "boundary_lines_y" not in raw:
+            kwargs["boundary_lines_y"] = legacy
 
     return PipelineConfig(**kwargs)
 

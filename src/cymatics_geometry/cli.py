@@ -12,7 +12,8 @@ app = typer.Typer(
     name="cymatics",
     help=(
         "Generate line geometry from a point plane displaced by multi-source "
-        "cymatics waves, optionally mapped onto cylinder / cone / frustum."
+        "cymatics waves, optionally mapped onto cylinder / cone / frustum / "
+        "variable cylinder / bead."
     ),
     add_completion=False,
 )
@@ -82,11 +83,32 @@ def generate(
         bool,
         typer.Option("--lines-y/--no-lines-y", help="Draw Y/V-parallel grid lines."),
     ] = True,
+    line_stride: Annotated[
+        int,
+        typer.Option(
+            "--line-stride",
+            help="Keep every N-th grid line in the drawn geometry (1 = all).",
+        ),
+    ] = 1,
+    boundary_lines_x: Annotated[
+        int,
+        typer.Option(
+            "--boundary-lines-x",
+            help="X-rows ends: +N keep first/last N, −N remove first/last |N|.",
+        ),
+    ] = 0,
+    boundary_lines_y: Annotated[
+        int,
+        typer.Option(
+            "--boundary-lines-y",
+            help="Y-cols ends: +N keep first/last N, −N remove first/last |N|.",
+        ),
+    ] = 0,
     shape: Annotated[
         str,
         typer.Option(
             "--shape",
-            help="Target surface: plane|cylinder|cone|frustum.",
+            help="Target surface: plane|cylinder|cone|frustum|variable_cylinder|bead.",
         ),
     ] = "plane",
     cylinder_diameter: Annotated[
@@ -123,6 +145,59 @@ def generate(
             help="Frustum top circle diameter at v=1.",
         ),
     ] = 20.0,
+    var_cyl_radius_begin: Annotated[
+        float,
+        typer.Option(
+            "--var-cyl-r-begin",
+            help="Variable-cylinder begin circle radius (v=0).",
+        ),
+    ] = 20.0,
+    var_cyl_radius_middle: Annotated[
+        float,
+        typer.Option(
+            "--var-cyl-r-middle",
+            help="Variable-cylinder middle circle radius.",
+        ),
+    ] = 30.0,
+    var_cyl_radius_end: Annotated[
+        float,
+        typer.Option(
+            "--var-cyl-r-end",
+            help="Variable-cylinder end circle radius (v=1).",
+        ),
+    ] = 15.0,
+    var_cyl_length: Annotated[
+        float,
+        typer.Option(
+            "--var-cyl-length",
+            help="Variable-cylinder total length along V.",
+        ),
+    ] = 100.0,
+    var_cyl_middle: Annotated[
+        float,
+        typer.Option(
+            "--var-cyl-middle",
+            help="Middle-circle station along V in [0.1, 0.9] (0=begin, 1=end).",
+        ),
+    ] = 0.5,
+    bead_diameter: Annotated[
+        float,
+        typer.Option("--bead-diameter", help="Bead sphere diameter (shape=bead)."),
+    ] = 40.0,
+    bead_bottom_radius: Annotated[
+        float,
+        typer.Option(
+            "--bead-bottom-radius",
+            help="Bead bottom slice circle radius (independent of top).",
+        ),
+    ] = 12.0,
+    bead_top_radius: Annotated[
+        float,
+        typer.Option(
+            "--bead-top-radius",
+            help="Bead top slice circle radius (independent of bottom).",
+        ),
+    ] = 12.0,
     line_color: Annotated[
         str,
         typer.Option(
@@ -212,6 +287,9 @@ def generate(
             line_pattern=pattern,
             lines_x=lines_x,
             lines_y=lines_y,
+            line_stride=max(1, int(line_stride)),
+            boundary_lines_x=int(boundary_lines_x),
+            boundary_lines_y=int(boundary_lines_y),
             shape=shape_kind,
             cylinder_diameter=cylinder_diameter,
             cylinder_length=cylinder_length,
@@ -220,6 +298,14 @@ def generate(
             frustum_height=frustum_height,
             frustum_base_diameter=frustum_base_diameter,
             frustum_top_diameter=frustum_top_diameter,
+            variable_cylinder_radius_begin=var_cyl_radius_begin,
+            variable_cylinder_radius_middle=var_cyl_radius_middle,
+            variable_cylinder_radius_end=var_cyl_radius_end,
+            variable_cylinder_length=var_cyl_length,
+            variable_cylinder_middle=max(0.1, min(0.9, float(var_cyl_middle))),
+            bead_diameter=bead_diameter,
+            bead_bottom_radius=bead_bottom_radius,
+            bead_top_radius=bead_top_radius,
         )
 
     if not quiet:
@@ -284,7 +370,10 @@ def stl(
     ] = 25.0,
     shape: Annotated[
         str,
-        typer.Option("--shape", help="Target surface: plane|cylinder|cone|frustum."),
+        typer.Option(
+            "--shape",
+            help="Target surface: plane|cylinder|cone|frustum|variable_cylinder|bead.",
+        ),
     ] = "plane",
     cylinder_diameter: Annotated[
         float,
@@ -314,6 +403,41 @@ def stl(
         float,
         typer.Option("--frustum-top-diameter", help="Frustum top diameter."),
     ] = 20.0,
+    var_cyl_radius_begin: Annotated[
+        float,
+        typer.Option("--var-cyl-r-begin", help="Variable-cylinder begin radius."),
+    ] = 20.0,
+    var_cyl_radius_middle: Annotated[
+        float,
+        typer.Option("--var-cyl-r-middle", help="Variable-cylinder middle radius."),
+    ] = 30.0,
+    var_cyl_radius_end: Annotated[
+        float,
+        typer.Option("--var-cyl-r-end", help="Variable-cylinder end radius."),
+    ] = 15.0,
+    var_cyl_length: Annotated[
+        float,
+        typer.Option("--var-cyl-length", help="Variable-cylinder length."),
+    ] = 100.0,
+    var_cyl_middle: Annotated[
+        float,
+        typer.Option(
+            "--var-cyl-middle",
+            help="Middle-circle station along V in [0.1, 0.9].",
+        ),
+    ] = 0.5,
+    bead_diameter: Annotated[
+        float,
+        typer.Option("--bead-diameter", help="Bead sphere diameter (shape=bead)."),
+    ] = 40.0,
+    bead_bottom_radius: Annotated[
+        float,
+        typer.Option("--bead-bottom-radius", help="Bead bottom slice radius."),
+    ] = 12.0,
+    bead_top_radius: Annotated[
+        float,
+        typer.Option("--bead-top-radius", help="Bead top slice radius."),
+    ] = 12.0,
     lines_x: Annotated[
         bool,
         typer.Option("--lines-x/--no-lines-x", help="Include X/U-parallel grid lines."),
@@ -326,7 +450,7 @@ def stl(
         float,
         typer.Option(
             "--voxel-size",
-            help="Voxel edge length (smaller = smoother/slower).",
+            help="Voxel edge length (smaller = smoother/slower; denser spines).",
         ),
     ] = 0.8,
     pipe_radius: Annotated[
@@ -353,6 +477,20 @@ def stl(
         int,
         typer.Option("--line-stride", help="Keep every N-th grid line."),
     ] = 2,
+    boundary_lines_x: Annotated[
+        int,
+        typer.Option(
+            "--boundary-lines-x",
+            help="X-rows ends: +N keep / −N remove first/last |N|.",
+        ),
+    ] = 1,
+    boundary_lines_y: Annotated[
+        int,
+        typer.Option(
+            "--boundary-lines-y",
+            help="Y-cols ends: +N keep / −N remove first/last |N|.",
+        ),
+    ] = 1,
     point_stride: Annotated[
         int,
         typer.Option("--point-stride", help="Keep every N-th sample along each line."),
@@ -364,6 +502,13 @@ def stl(
             help="Cubic-spline arc-length samples per spine.",
         ),
     ] = 40,
+    spine_smooth: Annotated[
+        float,
+        typer.Option(
+            "--spine-smooth",
+            help="Line-smoothing strength before piping (0 = interpolate).",
+        ),
+    ] = 1.0,
     export_dir: Annotated[
         Path,
         typer.Option("--export-dir", "-o", help="Directory for the STL file."),
@@ -437,6 +582,14 @@ def stl(
             frustum_height=frustum_height,
             frustum_base_diameter=frustum_base_diameter,
             frustum_top_diameter=frustum_top_diameter,
+            variable_cylinder_radius_begin=var_cyl_radius_begin,
+            variable_cylinder_radius_middle=var_cyl_radius_middle,
+            variable_cylinder_radius_end=var_cyl_radius_end,
+            variable_cylinder_length=var_cyl_length,
+            variable_cylinder_middle=max(0.1, min(0.9, float(var_cyl_middle))),
+            bead_diameter=bead_diameter,
+            bead_bottom_radius=bead_bottom_radius,
+            bead_top_radius=bead_top_radius,
         )
 
     if not quiet:
@@ -454,8 +607,11 @@ def stl(
             modulation_freq=modulation_freq,
             modulation_lobes=modulation_lobes,
             line_stride=line_stride,
+            boundary_lines_x=boundary_lines_x,
+            boundary_lines_y=boundary_lines_y,
             point_stride=point_stride,
             spine_samples=spine_samples,
+            spine_smooth=spine_smooth,
         )
     solid, path = pipe_and_export_stl(result, export_dir, vcfg, verbose=not quiet)
     typer.echo(f"STL exported: {path}")

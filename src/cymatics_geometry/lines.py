@@ -82,6 +82,49 @@ def grid_line_segments(
     return segments
 
 
+def stride_indices_with_boundary(
+    count: int,
+    stride: int,
+    boundary: int,
+) -> list[int]:
+    """Index set: every ``stride``-th line, with signed end treatment.
+
+    ``boundary``:
+      - ``> 0`` — always **keep** first N and last N lines
+      - ``< 0`` — **remove** first |N| and last |N| lines (from the strided set)
+      - ``0`` — stride only
+    """
+    m = int(count)
+    if m <= 0:
+        return []
+    stride_i = max(1, int(stride))
+    keep: set[int] = set(range(0, m, stride_i))
+    b = int(boundary)
+    if b > 0:
+        for i in range(min(b, m)):
+            keep.add(i)
+            keep.add(m - 1 - i)
+    elif b < 0:
+        remove_n = min(abs(b), m)
+        drop: set[int] = set()
+        for i in range(remove_n):
+            drop.add(i)
+            drop.add(m - 1 - i)
+        keep -= drop
+    return sorted(keep)
+
+
+def select_segments_strided(
+    segments: list[np.ndarray],
+    *,
+    stride: int = 1,
+    boundary: int = 0,
+) -> list[np.ndarray]:
+    """Thin a parallel line group with signed keep/remove end lines."""
+    idxs = stride_indices_with_boundary(len(segments), stride, boundary)
+    return [segments[i] for i in idxs]
+
+
 def segments_to_nan_polyline(segments: list[np.ndarray]) -> np.ndarray:
     """Join segments with NaN breaks for Plotly multi-line Scatter3d."""
     if not segments:
@@ -163,6 +206,10 @@ def build_line_geometry(
     pattern: str = "grid",
     lines_x: bool = True,
     lines_y: bool = True,
+    line_stride: int = 1,
+    boundary_lines_x: int = 0,
+    boundary_lines_y: int = 0,
+    boundary_lines: int | None = None,
 ) -> tuple[np.ndarray, pv.PolyData]:
     """Reconnect displaced grid points into line geometry.
 
@@ -170,20 +217,36 @@ def build_line_geometry(
     --------
     ``grid``
         Parallel X-row and/or Y-column lines (default). Toggle with
-        ``lines_x`` / ``lines_y``.
+        ``lines_x`` / ``lines_y``. ``line_stride`` keeps every N-th line.
+        ``boundary_lines_x`` / ``boundary_lines_y`` are signed: positive keeps
+        first/last N in that direction, negative removes first/last |N|.
+        Legacy ``boundary_lines`` (if given) applies the same value to both.
     ``serpentine`` / ``row_major``
         Legacy single continuous polyline.
     """
     nx = int(grid_size_x)
     ny = int(grid_size_y) if grid_size_y is not None else nx
     pts = np.asarray(displaced_points, dtype=float)
+    stride = max(1, int(line_stride))
+    if boundary_lines is not None:
+        bx = by = int(boundary_lines)
+    else:
+        bx = int(boundary_lines_x)
+        by = int(boundary_lines_y)
 
     if pattern == "grid":
         if not lines_x and not lines_y:
             return np.zeros((0, 3), dtype=float), pv.PolyData()
-        segments = grid_line_segments(
+        raw = grid_line_segments(
             pts, nx, ny, lines_x=bool(lines_x), lines_y=bool(lines_y)
         )
+        n_x = ny if lines_x else 0
+        n_y = nx if lines_y else 0
+        x_segs = raw[:n_x]
+        y_segs = raw[n_x : n_x + n_y]
+        segments = select_segments_strided(
+            x_segs, stride=stride, boundary=bx
+        ) + select_segments_strided(y_segs, stride=stride, boundary=by)
         polyline = segments_to_nan_polyline(segments)
         mesh = segments_to_polydata(segments)
         return polyline, mesh
