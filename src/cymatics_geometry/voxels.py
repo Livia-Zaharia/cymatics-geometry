@@ -16,9 +16,12 @@ from typing import Any, Callable
 import numpy as np
 import trimesh
 
+from cymatics_geometry.crop import crop_line_segments
+from cymatics_geometry.custom_shape import load_and_place_shape
 from cymatics_geometry.lines import (
     grid_line_segments,
     select_segments_strided,
+    split_nan_polyline,
     stride_indices_with_boundary,
 )
 
@@ -58,12 +61,12 @@ VOXEL_PARAM_HELP: dict[str, str] = {
         "1 = all lines; 2 = every other → fewer tubes, faster, less dense lattice."
     ),
     "boundary_lines_x": (
-        "X-rows end treatment (signed): >0 keep first/last N, <0 remove first/last "
-        "|N|, 0 = stride only."
+        "X-rows end treatment (signed): >0 keep only first/last N (drops the "
+        "middle); <0 remove first/last |N|, 0 = stride only."
     ),
     "boundary_lines_y": (
-        "Y-cols end treatment (signed): >0 keep first/last N, <0 remove first/last "
-        "|N|, 0 = stride only."
+        "Y-cols end treatment (signed): >0 keep only first/last N (drops the "
+        "middle); <0 remove first/last |N|, 0 = stride only."
     ),
     "boundary_lines": (
         "Legacy single end treatment applied to both axes when per-axis fields "
@@ -101,11 +104,11 @@ class VoxelPipeConfig:
     modulation_freq: float = 2.0
     modulation_lobes: int = 0
     line_stride: int = 2
-    # Signed end treatment per direction (>0 keep, <0 remove, 0 = stride only)
-    boundary_lines_x: int = 1
-    boundary_lines_y: int = 1
+    # Signed end treatment per direction (>0 keep only ends, <0 remove, 0 = stride)
+    boundary_lines_x: int = 0
+    boundary_lines_y: int = 0
     # Legacy alias (from_dict maps onto both axes when new fields absent)
-    boundary_lines: int = 1
+    boundary_lines: int = 0
     point_stride: int = 2
     spine_samples: int = 40
     # Relative smoothing for cubic-spline spines (0 = exact interpolation)
@@ -201,8 +204,8 @@ def polyline_segments_from_result(
     Prefers the same grid topology as stage 5 (X-rows / Y-cols). Falls back to
     splitting ``result.polyline`` on NaN breaks.
 
-    ``boundary_lines_x`` / ``boundary_lines_y`` are signed (keep vs remove ends).
-    Legacy ``boundary_lines`` applies the same value to both axes when given.
+    ``boundary_lines_x`` / ``boundary_lines_y`` are signed (keep only ends vs
+    remove ends). Legacy ``boundary_lines`` applies the same value to both axes.
     """
     stride_line = max(1, int(line_stride))
     stride_pt = max(1, int(point_stride))
@@ -238,9 +241,24 @@ def polyline_segments_from_result(
             select_segments_strided(y_segs, stride=stride_line, boundary=by)
         )
     else:
-        selected = _split_nan_polyline(np.asarray(result.polyline, dtype=float))
+        selected = split_nan_polyline(np.asarray(result.polyline, dtype=float))
         selected = select_segments_strided(
             selected, stride=stride_line, boundary=bx
+        )
+
+    region = None
+    if str(getattr(cfg, "shape", "")).lower() == "custom" and str(
+        getattr(cfg, "custom_shape_path", "")
+    ).strip():
+        placed = load_and_place_shape(
+            str(cfg.custom_shape_path),
+            size=float(cfg.custom_shape_size),
+        )
+        region = placed.region()
+    selected = crop_line_segments(selected, cfg, region=region)
+    if bool(getattr(cfg, "boundary_curve", True)):
+        selected.extend(
+            split_nan_polyline(np.asarray(getattr(result, "boundary_polyline", []), dtype=float))
         )
 
     out: list[np.ndarray] = []
@@ -662,7 +680,7 @@ def pipe_lines_to_voxels(
     )
     if not segments:
         raise ValueError(
-            "No polyline segments to pipe — enable lines_x/lines_y or check the grid."
+            "No polyline segments to pipe — enable lines, boundary, or check the grid."
         )
 
     if verbose:

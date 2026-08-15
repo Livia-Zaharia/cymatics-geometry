@@ -138,6 +138,7 @@ def test_polyline_segments_respect_line_stride() -> None:
             grid_size_y=6,
             lines_x=True,
             lines_y=True,
+            boundary_curve=False,
             amplitude_sw=1.0,
             wavelength_sw=20.0,
         ),
@@ -157,8 +158,11 @@ def test_boundary_lines_keep_first_and_last() -> None:
     from cymatics_geometry.lines import stride_indices_with_boundary
 
     assert stride_indices_with_boundary(6, stride=3, boundary=0) == [0, 3]
-    assert stride_indices_with_boundary(6, stride=3, boundary=1) == [0, 3, 5]
-    assert stride_indices_with_boundary(6, stride=3, boundary=2) == [0, 1, 3, 4, 5]
+    # +N keeps only the ends (stride is ignored — otherwise it looks like a no-op)
+    assert stride_indices_with_boundary(6, stride=3, boundary=1) == [0, 5]
+    assert stride_indices_with_boundary(6, stride=3, boundary=2) == [0, 1, 4, 5]
+    assert stride_indices_with_boundary(6, stride=1, boundary=1) == [0, 5]
+    assert stride_indices_with_boundary(6, stride=1, boundary=2) == [0, 1, 4, 5]
     # Negative removes ends from the strided set
     assert stride_indices_with_boundary(6, stride=1, boundary=-1) == [1, 2, 3, 4]
 
@@ -168,6 +172,7 @@ def test_boundary_lines_keep_first_and_last() -> None:
             grid_size_y=6,
             lines_x=True,
             lines_y=True,
+            boundary_curve=False,
             amplitude_sw=1.0,
             wavelength_sw=20.0,
         ),
@@ -180,8 +185,8 @@ def test_boundary_lines_keep_first_and_last() -> None:
         boundary_lines_x=1,
         boundary_lines_y=1,
     )
-    # X-rows (6): stride {0,2,4} ∪ {0,5} → 4; Y-cols (8): {0,2,4,6} ∪ {0,7} → 5
-    assert len(rim) == 4 + 5
+    # +N keeps only the ends (stride is ignored)
+    assert len(rim) == 2 + 2
 
     via_cfg = polyline_segments_from_result(
         result,
@@ -190,7 +195,8 @@ def test_boundary_lines_keep_first_and_last() -> None:
         boundary_lines_x=VoxelPipeConfig().boundary_lines_x,
         boundary_lines_y=VoxelPipeConfig().boundary_lines_y,
     )
-    assert len(via_cfg) == len(rim)
+    # Default keep=0 → stride only
+    assert len(via_cfg) == 3 + 4
 
 
 def test_pipe_lines_to_voxels_produces_mesh(tmp_path: Path) -> None:

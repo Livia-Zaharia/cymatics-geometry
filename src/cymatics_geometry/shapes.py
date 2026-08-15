@@ -29,6 +29,7 @@ ShapeKind = Literal[
     "frustum",
     "variable_cylinder",
     "bead",
+    "custom",
 ]
 SHAPE_KINDS: tuple[ShapeKind, ...] = (
     "plane",
@@ -37,6 +38,7 @@ SHAPE_KINDS: tuple[ShapeKind, ...] = (
     "frustum",
     "variable_cylinder",
     "bead",
+    "custom",
 )
 
 
@@ -66,6 +68,11 @@ class ShapeParams:
     bead_diameter: float = 40.0
     bead_bottom_radius: float = 12.0
     bead_top_radius: float = 12.0
+    # Custom 2D: axis-aligned bbox the square UV lattice is stretched onto
+    custom_bbox_xmin: float = 0.0
+    custom_bbox_ymin: float = 0.0
+    custom_bbox_xmax: float = 100.0
+    custom_bbox_ymax: float = 100.0
 
 
 def plane_uv(points: np.ndarray, side_length: float) -> tuple[np.ndarray, np.ndarray]:
@@ -324,6 +331,21 @@ def surface_base_and_frames(
     if kind == "plane":
         s = float(side_length)
         base = np.column_stack([u_a * s, v_a * s, np.zeros_like(u_a)])
+        tu = np.tile(np.array([1.0, 0.0, 0.0]), (len(u_a), 1))
+        tv = np.tile(np.array([0.0, 1.0, 0.0]), (len(u_a), 1))
+        n = np.tile(np.array([0.0, 0.0, 1.0]), (len(u_a), 1))
+        return base, tu, tv, n
+
+    if kind == "custom":
+        xmin = float(params.custom_bbox_xmin)
+        ymin = float(params.custom_bbox_ymin)
+        xmax = float(params.custom_bbox_xmax)
+        ymax = float(params.custom_bbox_ymax)
+        width = max(xmax - xmin, 1e-12)
+        height = max(ymax - ymin, 1e-12)
+        base = np.column_stack(
+            [xmin + u_a * width, ymin + v_a * height, np.zeros_like(u_a)]
+        )
         tu = np.tile(np.array([1.0, 0.0, 0.0]), (len(u_a), 1))
         tv = np.tile(np.array([0.0, 1.0, 0.0]), (len(u_a), 1))
         n = np.tile(np.array([0.0, 0.0, 1.0]), (len(u_a), 1))

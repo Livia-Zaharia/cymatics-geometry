@@ -10,19 +10,38 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
 import pyvista as pv
 
 from cymatics_geometry.config import PipelineConfig
+from cymatics_geometry.crop import (
+    SectionBox,
+    box_local_to_world,
+    clip_segment_aabb,
+    crop_line_segments,
+    crop_points_mask,
+    rebuild_line_geometry,
+    section_box_from_config,
+    section_box_wireframe,
+    world_to_box_local,
+)
+from cymatics_geometry.custom_shape import PlacedShape2D, load_and_place_shape
 from cymatics_geometry.grid import (
     SOURCE_LABELS,
     build_square_grid,
     grid_shape,
     source_positions,
 )
-from cymatics_geometry.lines import build_line_geometry, polyline_length
+from cymatics_geometry.lines import (
+    build_line_geometry,
+    polyline_length,
+    segments_to_nan_polyline,
+    split_nan_polyline,
+    tracked_boundary_loops,
+)
 from cymatics_geometry.shapes import (
     SHAPE_KINDS,
     ShapeParams,
@@ -65,17 +84,37 @@ class PipelineResult:
     shape_points: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
     plane_offsets: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
     shape_sources: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
-    # Stage 5 — reconnected line (on the mapped shape)
+    # Stage 5 — reconnected line (on the mapped shape, then cropped)
     polyline: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
     line_mesh: pv.PolyData = field(default_factory=pv.PolyData)
+    boundary_polyline: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    inside_mask: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=bool))
+    custom_outline: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    section_box_wire: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
     stats: dict = field(default_factory=dict)
 
 
-def _shape_params_from_config(config: PipelineConfig) -> ShapeParams:
+def _placed_custom_shape(config: PipelineConfig) -> PlacedShape2D | None:
+    if str(config.shape).lower().strip() != "custom":
+        return None
+    path = str(config.custom_shape_path).strip()
+    if not path:
+        raise ValueError("shape='custom' requires custom_shape_path (SVG, DXF, or DWG)")
+    return load_and_place_shape(path, size=float(config.custom_shape_size))
+
+
+def _shape_params_from_config(
+    config: PipelineConfig,
+    *,
+    placed: PlacedShape2D | None = None,
+) -> ShapeParams:
     kind = str(config.shape).lower().strip()
     if kind not in SHAPE_KINDS:
         allowed = ", ".join(SHAPE_KINDS)
         raise ValueError(f"Unknown shape {config.shape!r}; expected one of: {allowed}")
+    bbox = (0.0, 0.0, float(config.side_length), float(config.side_length))
+    if placed is not None:
+        bbox = placed.bbox
     return ShapeParams(
         kind=kind,  # type: ignore[arg-type]
         cylinder_diameter=float(config.cylinder_diameter),
@@ -93,7 +132,28 @@ def _shape_params_from_config(config: PipelineConfig) -> ShapeParams:
         bead_diameter=float(config.bead_diameter),
         bead_bottom_radius=float(config.bead_bottom_radius),
         bead_top_radius=float(config.bead_top_radius),
+        custom_bbox_xmin=float(bbox[0]),
+        custom_bbox_ymin=float(bbox[1]),
+        custom_bbox_xmax=float(bbox[2]),
+        custom_bbox_ymax=float(bbox[3]),
     )
+
+
+def _section_box_exit(
+    box: SectionBox,
+) -> Callable[[np.ndarray, np.ndarray], np.ndarray | None]:
+    """Return the clip hit of an in→out segment on the section box face."""
+    half = box.half_extents()
+
+    def _exit(p_in: np.ndarray, p_out: np.ndarray) -> np.ndarray | None:
+        a = world_to_box_local(np.asarray(p_in, dtype=float).reshape(1, 3), box)[0]
+        b = world_to_box_local(np.asarray(p_out, dtype=float).reshape(1, 3), box)[0]
+        clipped = clip_segment_aabb(a, b, -half, half)
+        if clipped is None:
+            return None
+        return box_local_to_world(np.asarray(clipped[1], dtype=float).reshape(1, 3), box)[0]
+
+    return _exit
 
 
 def run_pipeline(
@@ -110,6 +170,7 @@ def run_pipeline(
     3. Compute wave interference from active source amplitudes
     4. Displace points in Z; release unlocks XY as a connected surface
     5. Reconnect displaced points into a continuous line
+    6. Optional: crop to a custom 2D silhouette and/or clip with a section box
     """
     nx, ny = grid_shape(config)
     if verbose:
@@ -161,7 +222,12 @@ def run_pipeline(
         )
 
     # Stage 4b — map plane UV + local offsets onto the selected shape
-    shape_params = _shape_params_from_config(config)
+    placed = _placed_custom_shape(config)
+    crop_region = placed.region() if placed is not None else None
+    custom_outline = (
+        placed.outline_polyline() if placed is not None else np.zeros((0, 3), dtype=float)
+    )
+    shape_params = _shape_params_from_config(config, placed=placed)
     shape_base, shape_pts, plane_offs = map_points_to_shape(
         grid_points,
         displaced,
@@ -174,9 +240,19 @@ def run_pipeline(
         side_length=float(config.side_length),
     )
     if verbose:
-        print(f"Stage 4b — shape map: kind={shape_params.kind}")
+        extra = ""
+        if placed is not None:
+            extra = (
+                f" custom={placed.source_path.name} "
+                f"size={config.custom_shape_size:g} "
+                f"aspect={placed.aspect_ratio:.3f}"
+            )
+        print(f"Stage 4b — shape map: kind={shape_params.kind}{extra}")
 
-    # Stage 5 — reconnect on the mapped surface (same nx×ny adjacency)
+    # Stage 5 — reconnect. Missing = outside the section box (when enabled)
+    # or the custom 2D silhouette. The viewer Z axis is not a crop.
+    box = section_box_from_config(config)
+    alive = crop_points_mask(shape_pts, region=crop_region, box=box).reshape(ny, nx)
     polyline, line_mesh = build_line_geometry(
         shape_pts,
         nx,
@@ -188,15 +264,53 @@ def run_pipeline(
         boundary_lines_x=int(config.boundary_lines_x),
         boundary_lines_y=int(config.boundary_lines_y),
     )
+    boundary_segs = (
+        tracked_boundary_loops(
+            grid_points,
+            shape_pts,
+            nx,
+            ny,
+            outline_rings=list(placed.rings) if placed is not None else None,
+            region=crop_region,
+            alive=alive,
+            exit_fn=_section_box_exit(box) if box.enabled else None,
+        )
+        if bool(config.boundary_curve)
+        else []
+    )
+
+    # Stage 5b — clip interior lines to the box (short stubs at the Z faces).
+    # The tracked boundary already walks only visible points; do not fragment it.
+    box_wire = (
+        section_box_wireframe(box) if box.enabled else np.zeros((0, 3), dtype=float)
+    )
+    needs_crop = crop_region is not None or box.enabled
+    if needs_crop:
+        segments = split_nan_polyline(polyline)
+        clipped = crop_line_segments(segments, config, region=crop_region)
+        polyline, line_mesh = rebuild_line_geometry(clipped)
+    boundary_polyline = (
+        segments_to_nan_polyline(boundary_segs)
+        if boundary_segs
+        else np.zeros((0, 3), dtype=float)
+    )
+    inside_mask = crop_points_mask(shape_pts, region=crop_region, box=box)
     length = polyline_length(polyline)
     if verbose:
+        kept = int(np.count_nonzero(inside_mask)) if len(inside_mask) else len(shape_pts)
+        crop_note = ""
+        if needs_crop:
+            crop_note = f", cropped points={kept}/{len(shape_pts)}"
+            if box.enabled:
+                crop_note += " (section box on)"
         print(
             f"Stage 5 — line geometry: {len(polyline)} vertices, "
             f"length={length:.3f}, cells={line_mesh.n_cells} "
             f"(pattern={config.line_pattern}, "
             f"X={config.lines_x}, Y={config.lines_y}, "
             f"stride={config.line_stride}, "
-            f"keepX={config.boundary_lines_x}, keepY={config.boundary_lines_y})"
+            f"keepX={config.boundary_lines_x}, keepY={config.boundary_lines_y}"
+            f"{crop_note})"
         )
 
     stats = {
@@ -227,10 +341,19 @@ def run_pipeline(
         "line_pattern": config.line_pattern,
         "lines_x": bool(config.lines_x),
         "lines_y": bool(config.lines_y),
+        "boundary_curve": bool(config.boundary_curve),
+        "boundary_points": int(
+            sum(max(0, len(np.asarray(s)) - 1) for s in boundary_segs)
+        ),
+        "points_out_of_bounds": int(alive.size - int(np.count_nonzero(alive))),
         "line_stride": int(config.line_stride),
         "boundary_lines_x": int(config.boundary_lines_x),
         "boundary_lines_y": int(config.boundary_lines_y),
         "shape": str(config.shape),
+        "custom_shape_path": str(config.custom_shape_path),
+        "custom_shape_size": float(config.custom_shape_size),
+        "section_box_enabled": bool(config.section_box_enabled),
+        "points_kept": int(np.count_nonzero(inside_mask)) if len(inside_mask) else int(len(shape_pts)),
     }
 
     return PipelineResult(
@@ -251,6 +374,10 @@ def run_pipeline(
         shape_sources=shape_sources,
         polyline=polyline,
         line_mesh=line_mesh,
+        boundary_polyline=boundary_polyline,
+        inside_mask=inside_mask,
+        custom_outline=custom_outline,
+        section_box_wire=box_wire,
         stats=stats,
     )
 

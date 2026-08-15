@@ -539,6 +539,10 @@ def _shape_params_from_result(result: PipelineResult) -> ShapeParams:
         bead_diameter=float(cfg.bead_diameter),
         bead_bottom_radius=float(cfg.bead_bottom_radius),
         bead_top_radius=float(cfg.bead_top_radius),
+        custom_bbox_xmin=float(getattr(cfg, "custom_shape_size", 100.0) and 0.0),
+        custom_bbox_ymin=0.0,
+        custom_bbox_xmax=float(getattr(cfg, "custom_shape_size", 100.0)),
+        custom_bbox_ymax=float(getattr(cfg, "custom_shape_size", 100.0)),
     )
 
 
@@ -580,21 +584,67 @@ def _scene_ranges_for_shape(
     z_lim = max(float(z_display_max), 1e-6)
     travel_max = 150.0
     kind = str(result.config.shape).lower()
-    if kind == "plane":
+    box_on = bool(getattr(result.config, "section_box_enabled", False))
+    use_fitted = kind == "custom" or box_on
+
+    if not use_fitted and kind == "plane":
         s = float(result.config.side_length)
         xy_pad = 0.28 * s
+        pts = np.asarray(result.shape_points, dtype=float)
+        finite = pts[np.isfinite(pts).all(axis=1)] if pts.size else pts
+        if len(finite):
+            zmin = float(finite[:, 2].min())
+            zmax = float(finite[:, 2].max())
+        else:
+            zmin, zmax = -z_lim, z_lim
+        if zmax - zmin < 1e-6:
+            zmin, zmax = -z_lim, z_lim
+            z_pad = 0.0
+        else:
+            z_pad = max(0.08 * (zmax - zmin), 0.5)
         return (
             [-xy_pad, s + xy_pad],
             [-xy_pad, s + xy_pad],
-            [-z_lim, z_lim],
+            [zmin - z_pad, zmax + z_pad],
             {"x": 1.0, "y": 1.0, "z": 0.45},
         )
+
+    chunks: list[np.ndarray] = []
+    for arr in (
+        np.asarray(result.polyline, dtype=float),
+        np.asarray(getattr(result, "custom_outline", np.zeros((0, 3))), dtype=float),
+        np.asarray(getattr(result, "section_box_wire", np.zeros((0, 3))), dtype=float),
+        np.asarray(result.shape_points, dtype=float),
+    ):
+        if arr.size == 0:
+            continue
+        finite = arr[np.isfinite(arr).all(axis=1)]
+        if len(finite):
+            chunks.append(finite)
+
+    if use_fitted and chunks:
+        pts = np.vstack(chunks)
+        lo = pts.min(axis=0)
+        hi = pts.max(axis=0)
+        span = float(np.max(hi - lo))
+        pad = max(0.08 * span, z_lim * 0.15, 2.0)
+        x_range = [float(lo[0] - pad), float(hi[0] + pad)]
+        y_range = [float(lo[1] - pad), float(hi[1] + pad)]
+        z_range = [float(lo[2] - pad), float(hi[2] + pad)]
+        spans = [
+            max(x_range[1] - x_range[0], 1e-6),
+            max(y_range[1] - y_range[0], 1e-6),
+            max(z_range[1] - z_range[0], 1e-6),
+        ]
+        m = max(spans)
+        aspect = {"x": spans[0] / m, "y": spans[1] / m, "z": spans[2] / m}
+        _ = travel_max
+        return x_range, y_range, z_range, aspect
 
     params = _shape_params_from_result(result)
     xmin, xmax, ymin, ymax, zmin, zmax = shape_bounds(
         params, side_length=float(result.config.side_length)
     )
-    # Room for normal / tangential wave offsets (amp maps 1:1 into local frame)
     pad = z_lim + 0.15 * max(
         xmax - xmin, ymax - ymin, zmax - zmin, float(result.config.side_length), 1.0
     )
@@ -608,12 +658,27 @@ def _scene_ranges_for_shape(
     ]
     m = max(spans)
     aspect = {"x": spans[0] / m, "y": spans[1] / m, "z": spans[2] / m}
-    _ = travel_max  # kept for callers that still read fixed travel scale
+    _ = travel_max
     return x_range, y_range, z_range, aspect
+
+
+def _masked_shape_points(result: PipelineResult) -> tuple[np.ndarray, np.ndarray]:
+    """Mapped points (and bases) after 2D / section-box crop."""
+    pts = np.asarray(result.shape_points, dtype=float)
+    base = np.asarray(result.shape_base_points, dtype=float)
+    mask = np.asarray(getattr(result, "inside_mask", np.zeros(0)), dtype=bool)
+    if len(mask) == len(pts) and mask.size and not bool(np.all(mask)):
+        pts = pts[mask]
+        if len(base) == len(mask):
+            base = base[mask]
+    return pts, base
 
 
 def _ghost_footprint(result: PipelineResult) -> np.ndarray:
     """Undeformed shape outline for the dashed guide stroke."""
+    outline = np.asarray(getattr(result, "custom_outline", np.zeros((0, 3))), dtype=float)
+    if len(outline) > 0:
+        return outline
     params = _shape_params_from_result(result)
     return shape_boundary_polyline(
         params, side_length=float(result.config.side_length), samples=72
@@ -667,9 +732,7 @@ def _line_figure_widget(
     """Persistent Plotly 3D scene with fixed absolute color units."""
     sources, labels, active = _source_arrays(result)
     # Display the mapped shape (plane identity when shape=plane)
-    display_pts = np.asarray(result.shape_points, dtype=float)
-    if len(display_pts) == 0:
-        display_pts = np.asarray(result.displaced_points, dtype=float)
+    display_pts, base_pts = _masked_shape_points(result)
     display_sources = np.asarray(result.shape_sources, dtype=float)
     if len(display_sources) == 0:
         display_sources = sources
@@ -685,9 +748,8 @@ def _line_figure_widget(
     if len(display_pts) > 0:
         idx = _subsample_indices(len(display_pts), min(1200, max_vertices))
         cloud = display_pts[idx]
-        base = np.asarray(result.shape_base_points, dtype=float)
-        if len(base) == len(display_pts):
-            travel = np.linalg.norm(cloud - base[idx], axis=1)
+        if len(base_pts) == len(display_pts):
+            travel = np.linalg.norm(cloud - base_pts[idx], axis=1)
         else:
             offs = np.asarray(result.plane_offsets, dtype=float)
             travel = (
@@ -702,6 +764,12 @@ def _line_figure_widget(
     cloud_x, cloud_y, cloud_z = _plotly_xyz(cloud)
     line_x, line_y, line_z = _plotly_xyz(line)
     src_x, src_y, src_z = _plotly_xyz(display_sources)
+    box_wire = np.asarray(getattr(result, "section_box_wire", np.zeros((0, 3))), dtype=float)
+    box_x, box_y, box_z = _plotly_xyz(box_wire)
+    boundary = np.asarray(getattr(result, "boundary_polyline", np.zeros((0, 3))), dtype=float)
+    if len(boundary) == 0:
+        boundary = np.full((1, 3), np.nan, dtype=float)
+    bound_x, bound_y, bound_z = _plotly_xyz(boundary)
     travel_list = _plotly_floats(travel)
     line_style = _line_color_style(
         z, mode=str(line_color_mode), z_display_max=z_display_max
@@ -764,6 +832,27 @@ def _line_figure_widget(
                 textposition="top center",
                 marker={"size": 7, "color": _source_marker_colors(active)},
                 hoverinfo="text",
+            ),
+            go.Scatter3d(
+                x=box_x,
+                y=box_y,
+                z=box_z,
+                mode="lines",
+                name="section box",
+                line={"width": 4, "color": "#f97316"},
+                hoverinfo="skip",
+                visible=bool(getattr(result.config, "section_box_enabled", False)),
+            ),
+            go.Scatter3d(
+                x=bound_x,
+                y=bound_y,
+                z=bound_z,
+                mode="lines",
+                name="boundary",
+                line={"width": 5, "color": "#fbbf24"},
+                hoverinfo="skip",
+                visible=bool(getattr(result.config, "boundary_curve", True))
+                and len(np.asarray(getattr(result, "boundary_polyline", []), dtype=float)) > 0,
             ),
         ]
     )
@@ -836,16 +925,18 @@ def _apply_result_to_figure(
     if len(display_sources) == 0:
         display_sources = sources
 
-    display_pts = np.asarray(result.shape_points, dtype=float)
+    display_pts, base = _masked_shape_points(result)
     if len(display_pts) == 0:
-        display_pts = np.asarray(result.displaced_points, dtype=float)
-    base = np.asarray(result.shape_base_points, dtype=float)
-    idx = _subsample_indices(len(display_pts), min(1200, max_vertices))
-    cloud = display_pts[idx]
-    if len(base) == len(display_pts):
-        travel = np.linalg.norm(cloud - base[idx], axis=1)
+        idx = np.zeros(0, dtype=int)
+        cloud = np.zeros((0, 3), dtype=float)
+        travel = np.zeros(0, dtype=float)
     else:
-        travel = np.abs(cloud[:, 2])
+        idx = _subsample_indices(len(display_pts), min(1200, max_vertices))
+        cloud = display_pts[idx]
+        if len(base) == len(display_pts):
+            travel = np.linalg.norm(cloud - base[idx], axis=1)
+        else:
+            travel = np.abs(cloud[:, 2])
 
     z_lim = max(float(z_display_max), 1e-6)
     travel_max = 150.0
@@ -862,6 +953,15 @@ def _apply_result_to_figure(
     cloud_x, cloud_y, cloud_z = _plotly_xyz(cloud)
     line_x, line_y, line_z = _plotly_xyz(line)
     src_x, src_y, src_z = _plotly_xyz(display_sources)
+    box_wire = np.asarray(getattr(result, "section_box_wire", np.zeros((0, 3))), dtype=float)
+    box_x, box_y, box_z = _plotly_xyz(box_wire)
+    boundary = np.asarray(getattr(result, "boundary_polyline", np.zeros((0, 3))), dtype=float)
+    has_boundary = (
+        bool(getattr(result.config, "boundary_curve", True)) and len(boundary) > 0
+    )
+    if len(boundary) == 0:
+        boundary = np.full((1, 3), np.nan, dtype=float)
+    bound_x, bound_y, bound_z = _plotly_xyz(boundary)
     x_range, y_range, z_range, aspect = _scene_ranges_for_shape(
         result, z_display_max=z_display_max
     )
@@ -872,7 +972,7 @@ def _apply_result_to_figure(
     )
 
     with fig.batch_update():
-        # 0 = undeformed outline, 1 = points, 2 = line, 3 = sources
+        # 0 = outline, 1 = points, 2 = line, 3 = sources, 4 = section box, 5 = boundary
         fig.data[0].x = ghost_x
         fig.data[0].y = ghost_y
         fig.data[0].z = ghost_z
@@ -891,6 +991,16 @@ def _apply_result_to_figure(
         fig.data[3].z = src_z
         fig.data[3].text = list(labels)
         fig.data[3].marker.color = _source_marker_colors(active)
+        if len(fig.data) > 4:
+            fig.data[4].x = box_x
+            fig.data[4].y = box_y
+            fig.data[4].z = box_z
+            fig.data[4].visible = bool(getattr(result.config, "section_box_enabled", False))
+        if len(fig.data) > 5:
+            fig.data[5].x = bound_x
+            fig.data[5].y = bound_y
+            fig.data[5].z = bound_z
+            fig.data[5].visible = has_boundary
         fig.layout.scene.xaxis.range = x_range
         fig.layout.scene.yaxis.range = y_range
         fig.layout.scene.zaxis.range = z_range
@@ -924,11 +1034,13 @@ def show_interactive_line_viewer(
         Button,
         Checkbox,
         Dropdown,
+        FileUpload,
         FloatSlider,
         HTML,
         HBox,
         IntSlider,
         Layout,
+        Text,
         VBox,
     )
 
@@ -1088,6 +1200,17 @@ def show_interactive_line_viewer(
         indent=False,
         layout=Layout(width="160px"),
     )
+    boundary_cb = Checkbox(
+        value=bool(getattr(base, "boundary_curve", True)),
+        description="boundary",
+        indent=False,
+        layout=Layout(width="160px"),
+        tooltip=(
+            "Closed polyline of the original 2D outline (plane rectangle or imported "
+            "silhouette). The same lattice points stay connected, in the same order, "
+            "after the waves move them."
+        ),
+    )
     # Line thinning lives next to X/Y so it affects the drawn grid immediately.
     # continuous_update=False avoids thrashing large grids while dragging.
     _base_stride = max(1, int(getattr(base, "line_stride", 1) or 1))
@@ -1114,8 +1237,8 @@ def show_interactive_line_viewer(
         layout=full_slider,
         continuous_update=False,
         tooltip=(
-            "X-rows ends (signed): +N keep first/last N, −N remove first/last |N|, "
-            "0 = stride only."
+            "X-rows: +N keep only first/last N (drops everything in between); "
+            "−N shave first/last |N|; 0 = line step only."
         ),
     )
     boundary_lines_y_sl = IntSlider(
@@ -1128,16 +1251,16 @@ def show_interactive_line_viewer(
         layout=full_slider,
         continuous_update=False,
         tooltip=(
-            "Y-cols ends (signed): +N keep first/last N, −N remove first/last |N|, "
-            "0 = stride only."
+            "Y-cols: +N keep only first/last N (drops everything in between); "
+            "−N shave first/last |N|; 0 = line step only."
         ),
     )
     line_color_dd = Dropdown(
         options=[
-            ("difference (by Z)", "difference"),
             ("uniform white", "white"),
+            ("difference (by Z)", "difference"),
         ],
-        value="difference",
+        value="white",
         description="line color",
         style=global_style,
         layout=Layout(width="96%"),
@@ -1150,6 +1273,7 @@ def show_interactive_line_viewer(
             ("frustum (truncated cone)", "frustum"),
             ("variable cylinder (3 radii)", "variable_cylinder"),
             ("bead (sliced sphere)", "bead"),
+            ("custom (2D SVG/DXF/DWG)", "custom"),
         ],
         value=str(getattr(base, "shape", "plane") or "plane"),
         description="shape",
@@ -1310,6 +1434,128 @@ def show_interactive_line_viewer(
         layout=full_slider,
         tooltip="Top slice circle radius (clamped to ≤ sphere radius)",
     )
+    custom_path_txt = Text(
+        value=str(getattr(base, "custom_shape_path", "") or ""),
+        description="file",
+        style=global_style,
+        layout=Layout(width="96%"),
+        placeholder="path to .svg / .dxf / .dwg",
+    )
+    custom_upload = FileUpload(
+        accept=".svg,.dxf,.dwg",
+        multiple=False,
+        description="Upload 2D",
+        layout=Layout(width="96%", margin="2px 0 6px 0"),
+    )
+    custom_size_sl = FloatSlider(
+        value=float(getattr(base, "custom_shape_size", 100.0) or 100.0),
+        min=10.0,
+        max=300.0,
+        step=1.0,
+        description="2D size",
+        readout_format=".0f",
+        style=global_style,
+        layout=full_slider,
+        tooltip="Longest bounding-box side; imported aspect ratio is kept",
+    )
+    custom_status = HTML(value="", layout=Layout(width="98%"))
+    section_box_cb = Checkbox(
+        value=bool(getattr(base, "section_box_enabled", False)),
+        description="section box on",
+        indent=False,
+        layout=Layout(width="180px"),
+        tooltip="Clip mapped geometry to an oriented cube",
+    )
+    box_sx = FloatSlider(
+        value=float(getattr(base, "section_box_size_x", 120.0)),
+        min=1.0,
+        max=400.0,
+        step=1.0,
+        description="box X",
+        readout_format=".0f",
+        style=global_style,
+        layout=full_slider,
+    )
+    box_sy = FloatSlider(
+        value=float(getattr(base, "section_box_size_y", 120.0)),
+        min=1.0,
+        max=400.0,
+        step=1.0,
+        description="box Y",
+        readout_format=".0f",
+        style=global_style,
+        layout=full_slider,
+    )
+    box_sz = FloatSlider(
+        value=float(getattr(base, "section_box_size_z", 120.0)),
+        min=1.0,
+        max=400.0,
+        step=1.0,
+        description="box Z",
+        readout_format=".0f",
+        style=global_style,
+        layout=full_slider,
+    )
+    box_cx = FloatSlider(
+        value=float(getattr(base, "section_box_center_x", 50.0)),
+        min=-200.0,
+        max=200.0,
+        step=1.0,
+        description="center X",
+        readout_format=".0f",
+        style=global_style,
+        layout=full_slider,
+    )
+    box_cy = FloatSlider(
+        value=float(getattr(base, "section_box_center_y", 50.0)),
+        min=-200.0,
+        max=200.0,
+        step=1.0,
+        description="center Y",
+        readout_format=".0f",
+        style=global_style,
+        layout=full_slider,
+    )
+    box_cz = FloatSlider(
+        value=float(getattr(base, "section_box_center_z", 0.0)),
+        min=-200.0,
+        max=200.0,
+        step=1.0,
+        description="center Z",
+        readout_format=".0f",
+        style=global_style,
+        layout=full_slider,
+    )
+    box_rx = FloatSlider(
+        value=float(getattr(base, "section_box_rot_x", 0.0)),
+        min=-180.0,
+        max=180.0,
+        step=1.0,
+        description="rot X°",
+        readout_format=".0f",
+        style=global_style,
+        layout=full_slider,
+    )
+    box_ry = FloatSlider(
+        value=float(getattr(base, "section_box_rot_y", 0.0)),
+        min=-180.0,
+        max=180.0,
+        step=1.0,
+        description="rot Y°",
+        readout_format=".0f",
+        style=global_style,
+        layout=full_slider,
+    )
+    box_rz = FloatSlider(
+        value=float(getattr(base, "section_box_rot_z", 0.0)),
+        min=-180.0,
+        max=180.0,
+        step=1.0,
+        description="rot Z°",
+        readout_format=".0f",
+        style=global_style,
+        layout=full_slider,
+    )
     # --- Voxel pipe (3D-printable solid) ---
     voxel_size_sl = FloatSlider(
         value=0.8,
@@ -1454,6 +1700,12 @@ def show_interactive_line_viewer(
         _slider_with_number(bead_r_bot),
         _slider_with_number(bead_r_top),
     )
+    custom_param_rows = (
+        custom_upload,
+        custom_path_txt,
+        _slider_with_number(custom_size_sl),
+        custom_status,
+    )
 
     def _sync_shape_param_visibility(_change: object | None = None) -> None:
         kind = str(shape_dd.value)
@@ -1467,6 +1719,8 @@ def show_interactive_line_viewer(
             shape_param_box.children = var_cyl_param_rows
         elif kind == "bead":
             shape_param_box.children = bead_param_rows
+        elif kind == "custom":
+            shape_param_box.children = custom_param_rows
         else:
             shape_param_box.children = ()
 
@@ -1510,11 +1764,17 @@ def show_interactive_line_viewer(
             "line_pattern": "grid",
             "lines_x": bool(lines_x_cb.value),
             "lines_y": bool(lines_y_cb.value),
+            "boundary_curve": bool(boundary_cb.value),
             "line_stride": int(line_stride_sl.value),
             "boundary_lines_x": int(boundary_lines_x_sl.value),
             "boundary_lines_y": int(boundary_lines_y_sl.value),
             "boundary_lines": 0,
-            "shape": str(shape_dd.value),
+            "shape": (
+                "plane"
+                if str(shape_dd.value) == "custom"
+                and not str(custom_path_txt.value).strip()
+                else str(shape_dd.value)
+            ),
             "cylinder_diameter": float(cyl_diam.value),
             "cylinder_length": float(cyl_len.value),
             "cone_height": float(cone_h.value),
@@ -1530,6 +1790,19 @@ def show_interactive_line_viewer(
             "bead_diameter": float(bead_diam.value),
             "bead_bottom_radius": float(bead_r_bot.value),
             "bead_top_radius": float(bead_r_top.value),
+            "custom_shape_path": str(custom_path_txt.value).strip(),
+            "custom_shape_size": float(custom_size_sl.value),
+            "section_box_enabled": bool(section_box_cb.value),
+            "section_box_size_x": float(box_sx.value),
+            "section_box_size_y": float(box_sy.value),
+            "section_box_size_z": float(box_sz.value),
+            "section_box_center_x": float(box_cx.value),
+            "section_box_center_y": float(box_cy.value),
+            "section_box_center_z": float(box_cz.value),
+            "section_box_rot_x": float(box_rx.value),
+            "section_box_rot_y": float(box_ry.value),
+            "section_box_rot_z": float(box_rz.value),
+            "z_display_max": float(amplitude_max),
         }
         for key, w in source_widgets.items():
             kwargs[f"active_{key}"] = True
@@ -1550,9 +1823,11 @@ def show_interactive_line_viewer(
             f"step=<b>{live.config.line_stride}</b> · "
             f"keepX=<b>{live.config.boundary_lines_x}</b> · "
             f"keepY=<b>{live.config.boundary_lines_y}</b> · "
+            f"bound={live.stats.get('boundary_points', 0)} · "
             f"engaged={live.stats['active_labels']} · "
             f"z∈[{live.stats['displacement_min']:.2f}, {live.stats['displacement_max']:.2f}] · "
-            f"XY max={live.stats.get('xy_offset_max', 0.0):.1f}"
+            f"XY max={live.stats.get('xy_offset_max', 0.0):.1f} · "
+            f"kept={live.stats.get('points_kept', 0)}"
             "</div>"
         )
 
@@ -1580,18 +1855,20 @@ def show_interactive_line_viewer(
         """Dim / restore wireframe traces so a solid overlay is obvious."""
         op = float(np.clip(opacity, 0.0, 1.0))
         with fig.batch_update():
-            # 0 = ghost outline, 1 = points, 2 = lines, 3 = sources
+            # 0 = ghost, 1 = points, 2 = lines, 3 = sources, 5 = boundary
             fig.data[0].opacity = op
             fig.data[1].opacity = min(op, 0.35)
             fig.data[2].opacity = op
+            if len(fig.data) > 5:
+                fig.data[5].opacity = op
 
     def _clear_solid_overlay() -> None:
         _solid_visible["on"] = False
-        if len(fig.data) <= 4:
+        if len(fig.data) <= 6:
             return
         # Tiny dummy triangle keeps Mesh3d alive; empty arrays often break updates
         with fig.batch_update():
-            fig.data[4].update(
+            fig.data[6].update(
                 x=[0.0, 0.0, 0.0],
                 y=[0.0, 0.0, 0.0],
                 z=[0.0, 0.0, 0.0],
@@ -1614,7 +1891,7 @@ def show_interactive_line_viewer(
             idx = np.linspace(0, len(faces) - 1, 60_000, dtype=int)
             faces = faces[idx]
         with fig.batch_update():
-            fig.data[4].update(
+            fig.data[6].update(
                 x=verts[:, 0],
                 y=verts[:, 1],
                 z=verts[:, 2],
@@ -1668,7 +1945,13 @@ def show_interactive_line_viewer(
     def _rerun(_change: object | None = None) -> None:
         if _loading["on"]:
             return
-        live = run_pipeline(_config_from_state(), verbose=False)
+        try:
+            live = run_pipeline(_config_from_state(), verbose=False)
+        except Exception as exc:  # noqa: BLE001 — surface errors in the widget
+            status.value = (
+                f"<div style='font-size:11px;color:#b91c1c'>Pipeline failed: {exc}</div>"
+            )
+            return
         _last_live["result"] = live
         _apply_result_to_figure(
             fig,
@@ -1679,6 +1962,80 @@ def show_interactive_line_viewer(
         )
         status.value = _status_text(live)
         _clear_solid_overlay()
+
+    def _update_custom_status() -> None:
+        path = str(custom_path_txt.value).strip()
+        if not path:
+            custom_status.value = (
+                "<div style='font-size:11px;color:#b45309'>"
+                "Upload or paste a 2D SVG / DXF / DWG path. Size keeps aspect ratio."
+                "</div>"
+            )
+            return
+        from cymatics_geometry.custom_shape import load_shape_2d
+
+        try:
+            loaded = load_shape_2d(path)
+        except Exception as exc:  # noqa: BLE001 — surface errors in the widget
+            custom_status.value = (
+                f"<div style='font-size:11px;color:#b91c1c'>{exc}</div>"
+            )
+            return
+        custom_status.value = (
+            "<div style='font-size:11px;color:#065f46'>"
+            f"<b>{loaded.path.name}</b> · aspect {loaded.aspect_ratio:.3f} "
+            f"(W/H) · native "
+            f"{loaded.native_width:.1f}×{loaded.native_height:.1f}"
+            "</div>"
+        )
+
+    def _on_custom_upload(_change: object | None = None) -> None:
+        files = custom_upload.value
+        if not files:
+            return
+        if isinstance(files, dict):
+            item = next(iter(files.values()))
+            meta = item.get("metadata") if isinstance(item, dict) else None
+            name = meta["name"] if isinstance(meta, dict) else item["name"]
+            content = item["content"]
+        else:
+            item = files[0]
+            name = item["name"]
+            content = item["content"]
+        dest_dir = Path("uploads")
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / Path(str(name)).name
+        dest.write_bytes(bytes(content))
+        _loading["on"] = True
+        custom_path_txt.value = str(dest.resolve())
+        shape_dd.value = "custom"
+        _loading["on"] = False
+        _update_custom_status()
+        _rerun()
+
+    def _fit_section_box(_btn: object = None) -> None:
+        from cymatics_geometry.crop import section_box_from_points
+
+        live = _last_live.get("result")
+        pts = (
+            np.asarray(live.shape_points, dtype=float)
+            if live is not None
+            else np.zeros((0, 3))
+        )
+        box = section_box_from_points(pts, pad=2.0)
+        _loading["on"] = True
+        section_box_cb.value = True
+        box_sx.value = float(np.clip(box.size_x, box_sx.min, box_sx.max))
+        box_sy.value = float(np.clip(box.size_y, box_sy.min, box_sy.max))
+        box_sz.value = float(np.clip(box.size_z, box_sz.min, box_sz.max))
+        box_cx.value = float(np.clip(box.center_x, box_cx.min, box_cx.max))
+        box_cy.value = float(np.clip(box.center_y, box_cy.min, box_cy.max))
+        box_cz.value = float(np.clip(box.center_z, box_cz.min, box_cz.max))
+        box_rx.value = 0.0
+        box_ry.value = 0.0
+        box_rz.value = 0.0
+        _loading["on"] = False
+        _rerun()
 
     def _mirror_from_first(linked: list[str]) -> None:
         """Copy first selected source (SOURCE_LABELS order) onto the rest."""
@@ -1864,6 +2221,7 @@ def show_interactive_line_viewer(
         grid_y.value = int(np.clip(cfg.grid_size_y, grid_y.min, grid_y.max))
         lines_x_cb.value = bool(cfg.lines_x)
         lines_y_cb.value = bool(cfg.lines_y)
+        boundary_cb.value = bool(getattr(cfg, "boundary_curve", True))
         line_stride_sl.value = int(np.clip(cfg.line_stride, line_stride_sl.min, line_stride_sl.max))
         bx = int(cfg.boundary_lines_x)
         by = int(cfg.boundary_lines_y)
@@ -1894,6 +2252,24 @@ def show_interactive_line_viewer(
         bead_diam.value = float(cfg.bead_diameter)
         bead_r_bot.value = float(cfg.bead_bottom_radius)
         bead_r_top.value = float(cfg.bead_top_radius)
+        custom_path_txt.value = str(getattr(cfg, "custom_shape_path", "") or "")
+        custom_size_sl.value = float(
+            np.clip(
+                getattr(cfg, "custom_shape_size", 100.0),
+                custom_size_sl.min,
+                custom_size_sl.max,
+            )
+        )
+        section_box_cb.value = bool(getattr(cfg, "section_box_enabled", False))
+        box_sx.value = float(np.clip(cfg.section_box_size_x, box_sx.min, box_sx.max))
+        box_sy.value = float(np.clip(cfg.section_box_size_y, box_sy.min, box_sy.max))
+        box_sz.value = float(np.clip(cfg.section_box_size_z, box_sz.min, box_sz.max))
+        box_cx.value = float(np.clip(cfg.section_box_center_x, box_cx.min, box_cx.max))
+        box_cy.value = float(np.clip(cfg.section_box_center_y, box_cy.min, box_cy.max))
+        box_cz.value = float(np.clip(cfg.section_box_center_z, box_cz.min, box_cz.max))
+        box_rx.value = float(np.clip(cfg.section_box_rot_x, box_rx.min, box_rx.max))
+        box_ry.value = float(np.clip(cfg.section_box_rot_y, box_ry.min, box_ry.max))
+        box_rz.value = float(np.clip(cfg.section_box_rot_z, box_rz.min, box_rz.max))
         _sync_shape_param_visibility()
 
     def _apply_voxel_to_widgets(raw: dict) -> None:
@@ -1994,11 +2370,18 @@ def show_interactive_line_viewer(
         layout=Layout(width="120px", height="30px", margin="2px"),
         tooltip="Load the selected saved config into all sliders",
     )
+    btn_fit_box = Button(
+        description="Fit box",
+        layout=Layout(width="90px", height="28px", margin="2px"),
+        tooltip="Fit the section box to the current geometry AABB (no rotation)",
+    )
     btn_preview_solid.on_click(_on_preview_solid)
     btn_export_stl.on_click(_on_export_stl)
     btn_save_params.on_click(_on_save_params)
     btn_refresh_configs.on_click(_refresh_config_list)
     btn_load_config.on_click(_on_load_config)
+    btn_fit_box.on_click(_fit_section_box)
+    custom_upload.observe(_on_custom_upload, names="value")
 
     for w in source_widgets.values():
         for sl in (w["amp"], w["wavelength"], w["release"]):
@@ -2012,6 +2395,7 @@ def show_interactive_line_viewer(
         grid_y,
         lines_x_cb,
         lines_y_cb,
+        boundary_cb,
         line_stride_sl,
         boundary_lines_x_sl,
         boundary_lines_y_sl,
@@ -2032,6 +2416,18 @@ def show_interactive_line_viewer(
         bead_diam,
         bead_r_bot,
         bead_r_top,
+        custom_path_txt,
+        custom_size_sl,
+        section_box_cb,
+        box_sx,
+        box_sy,
+        box_sz,
+        box_cx,
+        box_cy,
+        box_cz,
+        box_rx,
+        box_ry,
+        box_rz,
     ):
         w.observe(_rerun, names="value")
     shape_dd.observe(_sync_shape_param_visibility, names="value")
@@ -2062,13 +2458,13 @@ def show_interactive_line_viewer(
             config_status,
             line_color_dd,
             HBox(
-                [lines_x_cb, lines_y_cb],
+                [lines_x_cb, lines_y_cb, boundary_cb],
                 layout=Layout(width="100%", margin="4px 0 4px 0"),
             ),
             HTML(
                 "<div style='font-size:11px;color:#6b7280;margin:0 0 4px 0'>"
-                "<b>line step</b> thins · <b>keep X/Y</b> signed "
-                "(+ keep ends, − remove ends) · status shows cell count"
+                "<b>boundary</b> tracks the original 2D outline point order · "
+                "<b>keep X/Y</b> +N keep only ends"
                 "</div>"
             ),
             _slider_with_number(line_stride_sl),
@@ -2083,6 +2479,26 @@ def show_interactive_line_viewer(
             ),
             shape_dd,
             shape_param_box,
+            HTML(
+                "<div style='font-size:13px;margin:10px 0 4px 0'><b>Section box</b> "
+                "<span style='color:#6b7280;font-size:11px'>"
+                "oriented cube that clips the mapped geometry · "
+                "size / center / rotation"
+                "</span></div>"
+            ),
+            HBox(
+                [section_box_cb, btn_fit_box],
+                layout=Layout(width="100%", margin="2px 0 6px 0"),
+            ),
+            _slider_with_number(box_sx),
+            _slider_with_number(box_sy),
+            _slider_with_number(box_sz),
+            _slider_with_number(box_cx),
+            _slider_with_number(box_cy),
+            _slider_with_number(box_cz),
+            _slider_with_number(box_rx),
+            _slider_with_number(box_ry),
+            _slider_with_number(box_rz),
             HTML(
                 "<div style='font-size:13px;margin:14px 0 10px 0'>"
                 "<b>Sources</b> "
@@ -2153,4 +2569,5 @@ def show_interactive_line_viewer(
         layout=Layout(width="100%", align_items="flex-start"),
     )
     display(ui)
+    _update_custom_status()
     return None

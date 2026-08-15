@@ -19,6 +19,10 @@ dependencies = [
     "plotly>=6.9.0",
     "anywidget>=0.11.0",
     "picopie>=0.7.0",
+    "shapely>=2.1.2",
+    "ezdxf>=1.4.4",
+    "svgelements>=1.9.6",
+    "ezdwg>=0.11.0",
 ]
 
 [project.scripts]

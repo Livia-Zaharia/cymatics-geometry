@@ -71,6 +71,8 @@ dmypy.json
 # uv.lock is kept for apps; optional for libraries — keep it for reproducibility
 # uv.lock
 
+uploads/
+
 # Exports and generated geometry
 exports/
 *.stl

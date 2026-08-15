@@ -127,6 +127,7 @@ def test_grid_lines_have_both_directions() -> None:
             line_pattern="grid",
             lines_x=True,
             lines_y=False,
+            boundary_curve=False,
         ),
         verbose=False,
     )
@@ -139,6 +140,7 @@ def test_grid_lines_have_both_directions() -> None:
             line_pattern="grid",
             lines_x=False,
             lines_y=True,
+            boundary_curve=False,
         ),
         verbose=False,
     )
@@ -161,13 +163,14 @@ def test_line_stride_and_boundary_lines_thin_display() -> None:
             line_stride=2,
             boundary_lines_x=0,
             boundary_lines_y=0,
+            boundary_curve=False,
         ),
         verbose=False,
     )
     # X-rows 6 → 3; Y-cols 8 → 4
     assert thinned.line_mesh.n_cells == 3 + 4
 
-    with_rim = run_pipeline(
+    only_ends = run_pipeline(
         PipelineConfig(
             grid_size_x=8,
             grid_size_y=6,
@@ -178,9 +181,9 @@ def test_line_stride_and_boundary_lines_thin_display() -> None:
         ),
         verbose=False,
     )
-    # X: {0,2,4}∪{0,5}=4; Y: {0,2,4,6}∪{0,7}=5
-    assert with_rim.line_mesh.n_cells == 4 + 5
-    assert with_rim.line_mesh.n_cells > thinned.line_mesh.n_cells
+    # +N ignores stride and keeps only the ends
+    assert only_ends.line_mesh.n_cells == 2 + 2
+    assert only_ends.line_mesh.n_cells < thinned.line_mesh.n_cells
 
     # Negative keep X removes first/last from X-rows only
     drop_x = run_pipeline(
@@ -191,11 +194,60 @@ def test_line_stride_and_boundary_lines_thin_display() -> None:
             line_stride=1,
             boundary_lines_x=-1,
             boundary_lines_y=0,
+            boundary_curve=False,
         ),
         verbose=False,
     )
     # X-rows 6 − 2 ends = 4; Y-cols unchanged 8
     assert drop_x.line_mesh.n_cells == 4 + 8
+
+
+def test_boundary_curve_is_continuous_network_loop() -> None:
+    """Tracked rectangle stays one closed loop of the original edge points."""
+    from cymatics_geometry.lines import split_nan_polyline
+
+    result = run_pipeline(
+        PipelineConfig(
+            grid_size_x=8,
+            grid_size_y=6,
+            line_pattern="grid",
+            line_stride=3,
+            boundary_lines_x=0,
+            boundary_lines_y=0,
+            amplitude_sw=2.0,
+            wavelength_sw=20.0,
+        ),
+        verbose=False,
+    )
+    loops = split_nan_polyline(result.boundary_polyline)
+    assert len(loops) == 1
+    loop = loops[0]
+    assert len(loop) >= 5
+    np.testing.assert_allclose(loop[0], loop[-1], atol=1e-8)
+
+    pts = result.shape_points.reshape(6, 8, 3)
+    corners = [pts[0, 0], pts[0, -1], pts[-1, -1], pts[-1, 0]]
+    for corner in corners:
+        dist = np.linalg.norm(loop - corner.reshape(1, 3), axis=1).min()
+        assert dist < 1e-6
+
+    # Interior thinning does not add extra perimeter lines to the grid mesh
+    thinned_cells = result.line_mesh.n_cells
+    assert thinned_cells == 2 + 3  # stride 3: X-rows {0,3} Y-cols {0,3,6}
+
+    frame_only = run_pipeline(
+        PipelineConfig(
+            grid_size_x=8,
+            grid_size_y=6,
+            line_pattern="grid",
+            lines_x=False,
+            lines_y=False,
+            boundary_curve=True,
+        ),
+        verbose=False,
+    )
+    assert frame_only.line_mesh.n_cells == 0
+    assert len(split_nan_polyline(frame_only.boundary_polyline)) == 1
 
 
 def test_negative_amplitude_flips_displacement() -> None:

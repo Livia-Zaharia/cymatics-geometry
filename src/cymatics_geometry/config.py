@@ -106,10 +106,13 @@ class PipelineConfig:
     # Which grid directions to draw (only used when line_pattern == "grid")
     lines_x: bool = True
     lines_y: bool = True
+    # Closed polyline tracking the original 2D outline through the waves
+    boundary_curve: bool = True
     # Thin grid lines: keep every N-th line (1 = all)
     line_stride: int = 1
     # Signed end treatment per direction (X-rows / Y-cols):
-    #   >0 keep first/last N, <0 remove first/last |N|, 0 = stride only
+    #   >0 keep only first/last N (drop the middle), <0 remove first/last |N|,
+    #   0 = stride only
     boundary_lines_x: int = 0
     boundary_lines_y: int = 0
     # Legacy single value (load maps onto both axes when new fields absent)
@@ -137,6 +140,25 @@ class PipelineConfig:
     bead_diameter: float = 40.0
     bead_bottom_radius: float = 12.0
     bead_top_radius: float = 12.0
+
+    # Custom 2D vector silhouette (SVG / DXF / DWG). Size is the longest bbox
+    # side; aspect ratio of the imported drawing is always preserved.
+    custom_shape_path: str = ""
+    custom_shape_size: float = 100.0
+
+    # Oriented section box — clips mapped geometry when enabled
+    section_box_enabled: bool = False
+    section_box_size_x: float = 120.0
+    section_box_size_y: float = 120.0
+    section_box_size_z: float = 120.0
+    section_box_center_x: float = 50.0
+    section_box_center_y: float = 50.0
+    section_box_center_z: float = 0.0
+    section_box_rot_x: float = 0.0
+    section_box_rot_y: float = 0.0
+    section_box_rot_z: float = 0.0
+    # Plane viewer Z slab (Plotly range). Points outside are not shown.
+    z_display_max: float = 10.0
 
     @property
     def grid_size(self) -> int:
@@ -278,9 +300,29 @@ class PipelineConfig:
         return asdict(self)
 
 
+# Defaults that existed when each field was introduced. Used only when an old
+# JSON omits the key (do not silently pick a later dataclass default).
+_LEGACY_WHEN_ABSENT: dict[str, Any] = {
+    "grid_size_x": 100,
+    "grid_size_y": 100,
+    "line_stride": 1,
+    "boundary_lines_x": 0,
+    "boundary_lines_y": 0,
+    "boundary_lines": 0,
+    "boundary_curve": True,
+}
+
+
 def load_pipeline_config(path: str | Path) -> PipelineConfig:
-    """Load a PipelineConfig from a JSON file (unknown keys ignored)."""
+    """Load a PipelineConfig from a JSON file (unknown keys ignored).
+
+    Older files stored line thinning only under ``voxel``. Missing pipeline
+    ``line_stride`` / keep-X / keep-Y / grid size fall back to that nested
+    object, then to the defaults from when those fields were added.
+    """
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    voxel_raw = raw.get("voxel")
+    voxel: dict[str, Any] = dict(voxel_raw) if isinstance(voxel_raw, Mapping) else {}
     known = {f.name: f for f in fields(PipelineConfig)}
     kwargs: dict = {}
     for name, field_info in known.items():
@@ -312,14 +354,45 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
             kwargs["grid_size_x"] = n
         if "grid_size_y" not in raw:
             kwargs["grid_size_y"] = n
+    if "grid_size_x" not in raw and "grid_size_y" in raw:
+        kwargs["grid_size_x"] = int(raw["grid_size_y"])
+    if "grid_size_y" not in raw and "grid_size_x" in raw:
+        kwargs["grid_size_y"] = int(raw["grid_size_x"])
+    if "grid_size_x" not in kwargs:
+        kwargs["grid_size_x"] = int(_LEGACY_WHEN_ABSENT["grid_size_x"])
+    if "grid_size_y" not in kwargs:
+        kwargs["grid_size_y"] = int(_LEGACY_WHEN_ABSENT["grid_size_y"])
 
-    # Old single boundary_lines → both axes when per-axis fields absent
+    # Line step / keep lived on voxel before they were pipeline display fields
+    if "line_stride" not in raw:
+        if "line_stride" in voxel:
+            kwargs["line_stride"] = int(voxel["line_stride"])
+        else:
+            kwargs["line_stride"] = int(_LEGACY_WHEN_ABSENT["line_stride"])
+
     if "boundary_lines" in raw:
         legacy = int(raw["boundary_lines"])
         if "boundary_lines_x" not in raw:
             kwargs["boundary_lines_x"] = legacy
         if "boundary_lines_y" not in raw:
             kwargs["boundary_lines_y"] = legacy
+    if "boundary_lines_x" not in raw:
+        if "boundary_lines_x" in voxel:
+            kwargs["boundary_lines_x"] = int(voxel["boundary_lines_x"])
+        elif "boundary_lines" in voxel:
+            kwargs["boundary_lines_x"] = int(voxel["boundary_lines"])
+        elif "boundary_lines_x" not in kwargs:
+            kwargs["boundary_lines_x"] = int(_LEGACY_WHEN_ABSENT["boundary_lines_x"])
+    if "boundary_lines_y" not in raw:
+        if "boundary_lines_y" in voxel:
+            kwargs["boundary_lines_y"] = int(voxel["boundary_lines_y"])
+        elif "boundary_lines" in voxel:
+            kwargs["boundary_lines_y"] = int(voxel["boundary_lines"])
+        elif "boundary_lines_y" not in kwargs:
+            kwargs["boundary_lines_y"] = int(_LEGACY_WHEN_ABSENT["boundary_lines_y"])
+
+    if "boundary_curve" not in raw:
+        kwargs["boundary_curve"] = bool(_LEGACY_WHEN_ABSENT["boundary_curve"])
 
     return PipelineConfig(**kwargs)
 

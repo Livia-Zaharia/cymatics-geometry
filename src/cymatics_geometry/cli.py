@@ -13,7 +13,8 @@ app = typer.Typer(
     help=(
         "Generate line geometry from a point plane displaced by multi-source "
         "cymatics waves, optionally mapped onto cylinder / cone / frustum / "
-        "variable cylinder / bead."
+        "variable cylinder / bead / a custom 2D vector silhouette, then clipped "
+        "by an optional section box."
     ),
     add_completion=False,
 )
@@ -83,6 +84,13 @@ def generate(
         bool,
         typer.Option("--lines-y/--no-lines-y", help="Draw Y/V-parallel grid lines."),
     ] = True,
+    boundary_curve: Annotated[
+        bool,
+        typer.Option(
+            "--boundary-curve/--no-boundary-curve",
+            help="Closed polyline tracking the original 2D outline through the waves.",
+        ),
+    ] = True,
     line_stride: Annotated[
         int,
         typer.Option(
@@ -94,21 +102,24 @@ def generate(
         int,
         typer.Option(
             "--boundary-lines-x",
-            help="X-rows ends: +N keep first/last N, −N remove first/last |N|.",
+            help="X-rows: +N keep only first/last N (drops the middle); −N shave ends.",
         ),
     ] = 0,
     boundary_lines_y: Annotated[
         int,
         typer.Option(
             "--boundary-lines-y",
-            help="Y-cols ends: +N keep first/last N, −N remove first/last |N|.",
+            help="Y-cols: +N keep only first/last N (drops the middle); −N shave ends.",
         ),
     ] = 0,
     shape: Annotated[
         str,
         typer.Option(
             "--shape",
-            help="Target surface: plane|cylinder|cone|frustum|variable_cylinder|bead.",
+            help=(
+                "Target surface: plane|cylinder|cone|frustum|variable_cylinder|"
+                "bead|custom."
+            ),
         ),
     ] = "plane",
     cylinder_diameter: Annotated[
@@ -198,6 +209,33 @@ def generate(
             help="Bead top slice circle radius (independent of bottom).",
         ),
     ] = 12.0,
+    custom_shape: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--custom-shape",
+            help="2D vector file (SVG/DXF/DWG) when --shape custom. Aspect ratio kept.",
+        ),
+    ] = None,
+    custom_shape_size: Annotated[
+        float,
+        typer.Option(
+            "--custom-shape-size",
+            help="Longest bbox side of the imported 2D shape (uniform scale).",
+        ),
+    ] = 100.0,
+    section_box: Annotated[
+        bool,
+        typer.Option("--section-box/--no-section-box", help="Clip geometry with an oriented cube."),
+    ] = False,
+    box_size_x: Annotated[float, typer.Option("--box-size-x", help="Section box size X.")] = 120.0,
+    box_size_y: Annotated[float, typer.Option("--box-size-y", help="Section box size Y.")] = 120.0,
+    box_size_z: Annotated[float, typer.Option("--box-size-z", help="Section box size Z.")] = 120.0,
+    box_cx: Annotated[float, typer.Option("--box-cx", help="Section box center X.")] = 50.0,
+    box_cy: Annotated[float, typer.Option("--box-cy", help="Section box center Y.")] = 50.0,
+    box_cz: Annotated[float, typer.Option("--box-cz", help="Section box center Z.")] = 0.0,
+    box_rx: Annotated[float, typer.Option("--box-rx", help="Section box rotation X (deg).")] = 0.0,
+    box_ry: Annotated[float, typer.Option("--box-ry", help="Section box rotation Y (deg).")] = 0.0,
+    box_rz: Annotated[float, typer.Option("--box-rz", help="Section box rotation Z (deg).")] = 0.0,
     line_color: Annotated[
         str,
         typer.Option(
@@ -252,6 +290,14 @@ def generate(
         )
         raise typer.Exit(1)
 
+    if shape_kind == "custom" and config is None:
+        if custom_shape is None or not custom_shape.exists():
+            typer.echo(
+                "shape=custom requires --custom-shape PATH to an SVG/DXF/DWG file",
+                err=True,
+            )
+            raise typer.Exit(1)
+
     if config is not None:
         if not config.exists():
             typer.echo(f"Config file not found: {config}", err=True)
@@ -287,6 +333,7 @@ def generate(
             line_pattern=pattern,
             lines_x=lines_x,
             lines_y=lines_y,
+            boundary_curve=bool(boundary_curve),
             line_stride=max(1, int(line_stride)),
             boundary_lines_x=int(boundary_lines_x),
             boundary_lines_y=int(boundary_lines_y),
@@ -306,6 +353,18 @@ def generate(
             bead_diameter=bead_diameter,
             bead_bottom_radius=bead_bottom_radius,
             bead_top_radius=bead_top_radius,
+            custom_shape_path="" if custom_shape is None else str(custom_shape),
+            custom_shape_size=float(custom_shape_size),
+            section_box_enabled=bool(section_box),
+            section_box_size_x=float(box_size_x),
+            section_box_size_y=float(box_size_y),
+            section_box_size_z=float(box_size_z),
+            section_box_center_x=float(box_cx),
+            section_box_center_y=float(box_cy),
+            section_box_center_z=float(box_cz),
+            section_box_rot_x=float(box_rx),
+            section_box_rot_y=float(box_ry),
+            section_box_rot_z=float(box_rz),
         )
 
     if not quiet:
@@ -372,7 +431,10 @@ def stl(
         str,
         typer.Option(
             "--shape",
-            help="Target surface: plane|cylinder|cone|frustum|variable_cylinder|bead.",
+            help=(
+                "Target surface: plane|cylinder|cone|frustum|variable_cylinder|"
+                "bead|custom."
+            ),
         ),
     ] = "plane",
     cylinder_diameter: Annotated[
@@ -438,6 +500,30 @@ def stl(
         float,
         typer.Option("--bead-top-radius", help="Bead top slice radius."),
     ] = 12.0,
+    custom_shape: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--custom-shape",
+            help="2D vector file (SVG/DXF/DWG) when --shape custom.",
+        ),
+    ] = None,
+    custom_shape_size: Annotated[
+        float,
+        typer.Option("--custom-shape-size", help="Longest bbox side (uniform scale)."),
+    ] = 100.0,
+    section_box: Annotated[
+        bool,
+        typer.Option("--section-box/--no-section-box", help="Clip geometry with an oriented cube."),
+    ] = False,
+    box_size_x: Annotated[float, typer.Option("--box-size-x", help="Section box size X.")] = 120.0,
+    box_size_y: Annotated[float, typer.Option("--box-size-y", help="Section box size Y.")] = 120.0,
+    box_size_z: Annotated[float, typer.Option("--box-size-z", help="Section box size Z.")] = 120.0,
+    box_cx: Annotated[float, typer.Option("--box-cx", help="Section box center X.")] = 50.0,
+    box_cy: Annotated[float, typer.Option("--box-cy", help="Section box center Y.")] = 50.0,
+    box_cz: Annotated[float, typer.Option("--box-cz", help="Section box center Z.")] = 0.0,
+    box_rx: Annotated[float, typer.Option("--box-rx", help="Section box rotation X (deg).")] = 0.0,
+    box_ry: Annotated[float, typer.Option("--box-ry", help="Section box rotation Y (deg).")] = 0.0,
+    box_rz: Annotated[float, typer.Option("--box-rz", help="Section box rotation Z (deg).")] = 0.0,
     lines_x: Annotated[
         bool,
         typer.Option("--lines-x/--no-lines-x", help="Include X/U-parallel grid lines."),
@@ -445,6 +531,13 @@ def stl(
     lines_y: Annotated[
         bool,
         typer.Option("--lines-y/--no-lines-y", help="Include Y/V-parallel grid lines."),
+    ] = True,
+    boundary_curve: Annotated[
+        bool,
+        typer.Option(
+            "--boundary-curve/--no-boundary-curve",
+            help="Closed polyline tracking the original 2D outline through the waves.",
+        ),
     ] = True,
     voxel_size: Annotated[
         float,
@@ -481,16 +574,16 @@ def stl(
         int,
         typer.Option(
             "--boundary-lines-x",
-            help="X-rows ends: +N keep / −N remove first/last |N|.",
+            help="X-rows: +N keep only first/last N (drops the middle); −N shave ends.",
         ),
-    ] = 1,
+    ] = 0,
     boundary_lines_y: Annotated[
         int,
         typer.Option(
             "--boundary-lines-y",
-            help="Y-cols ends: +N keep / −N remove first/last |N|.",
+            help="Y-cols: +N keep only first/last N (drops the middle); −N shave ends.",
         ),
-    ] = 1,
+    ] = 0,
     point_stride: Annotated[
         int,
         typer.Option("--point-stride", help="Keep every N-th sample along each line."),
@@ -574,6 +667,7 @@ def stl(
             line_pattern="grid",
             lines_x=lines_x,
             lines_y=lines_y,
+            boundary_curve=bool(boundary_curve),
             shape=shape_kind,
             cylinder_diameter=cylinder_diameter,
             cylinder_length=cylinder_length,
@@ -590,6 +684,18 @@ def stl(
             bead_diameter=bead_diameter,
             bead_bottom_radius=bead_bottom_radius,
             bead_top_radius=bead_top_radius,
+            custom_shape_path="" if custom_shape is None else str(custom_shape),
+            custom_shape_size=float(custom_shape_size),
+            section_box_enabled=bool(section_box),
+            section_box_size_x=float(box_size_x),
+            section_box_size_y=float(box_size_y),
+            section_box_size_z=float(box_size_z),
+            section_box_center_x=float(box_cx),
+            section_box_center_y=float(box_cy),
+            section_box_center_z=float(box_cz),
+            section_box_rot_x=float(box_rx),
+            section_box_rot_y=float(box_ry),
+            section_box_rot_z=float(box_rz),
         )
 
     if not quiet:
