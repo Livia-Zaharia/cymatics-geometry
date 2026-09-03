@@ -13,11 +13,84 @@ app = typer.Typer(
     help=(
         "Generate line geometry from a point plane displaced by multi-source "
         "cymatics waves, optionally mapped onto cylinder / cone / frustum / "
-        "variable cylinder / bead / a custom 2D vector silhouette, then clipped "
+        "variable cylinder / teardrop / bead / a custom 2D vector silhouette, then clipped "
         "by an optional section box."
     ),
     add_completion=False,
 )
+
+
+def _teardrop_config_fields(
+    height: float,
+    r0: float,
+    r1: float,
+    r2: float,
+    r3: float,
+    r4: float,
+    t1: float,
+    t2: float,
+    t3: float,
+) -> dict[str, float]:
+    from cymatics_geometry.shapes import _clamp_interior_stations
+
+    s1, s2, s3 = _clamp_interior_stations(t1, t2, t3)
+    return {
+        "teardrop_height": max(float(height), 1e-9),
+        "teardrop_radius_0": max(float(r0), 0.0),
+        "teardrop_radius_1": max(float(r1), 0.0),
+        "teardrop_radius_2": max(float(r2), 0.0),
+        "teardrop_radius_3": max(float(r3), 0.0),
+        "teardrop_radius_4": max(float(r4), 0.0),
+        "teardrop_station_1": s1,
+        "teardrop_station_2": s2,
+        "teardrop_station_3": s3,
+    }
+
+
+def _bead_config_fields(
+    diameter: float,
+    bottom_radius: float,
+    top_radius: float,
+    height: float | None,
+    r0: float | None,
+    r1: float | None,
+    r2: float | None,
+    r3: float | None,
+    r4: float | None,
+    t1: float | None,
+    t2: float | None,
+    t3: float | None,
+) -> dict[str, float]:
+    from cymatics_geometry.shapes import overlay_bead_profile
+
+    h, rs, ts = overlay_bead_profile(
+        diameter,
+        bottom_radius,
+        top_radius,
+        height=height,
+        radius_0=r0,
+        radius_1=r1,
+        radius_2=r2,
+        radius_3=r3,
+        radius_4=r4,
+        station_1=t1,
+        station_2=t2,
+        station_3=t3,
+    )
+    return {
+        "bead_diameter": float(diameter),
+        "bead_bottom_radius": float(bottom_radius),
+        "bead_top_radius": float(top_radius),
+        "bead_height": h,
+        "bead_radius_0": rs[0],
+        "bead_radius_1": rs[1],
+        "bead_radius_2": rs[2],
+        "bead_radius_3": rs[3],
+        "bead_radius_4": rs[4],
+        "bead_station_1": ts[0],
+        "bead_station_2": ts[1],
+        "bead_station_3": ts[2],
+    }
 
 
 @app.command()
@@ -118,7 +191,7 @@ def generate(
             "--shape",
             help=(
                 "Target surface: plane|cylinder|cone|frustum|variable_cylinder|"
-                "bead|custom."
+                "teardrop|bead|custom."
             ),
         ),
     ] = "plane",
@@ -209,6 +282,78 @@ def generate(
             help="Bead top slice circle radius (independent of bottom).",
         ),
     ] = 12.0,
+    teardrop_height: Annotated[
+        float,
+        typer.Option("--teardrop-height", help="Teardrop height along V (shape=teardrop)."),
+    ] = 100.0,
+    teardrop_r0: Annotated[
+        float,
+        typer.Option("--teardrop-r0", help="Teardrop circle 0 radius (v=0 base)."),
+    ] = 22.0,
+    teardrop_r1: Annotated[
+        float,
+        typer.Option("--teardrop-r1", help="Teardrop circle 1 radius."),
+    ] = 20.0,
+    teardrop_r2: Annotated[
+        float,
+        typer.Option("--teardrop-r2", help="Teardrop circle 2 radius."),
+    ] = 16.0,
+    teardrop_r3: Annotated[
+        float,
+        typer.Option("--teardrop-r3", help="Teardrop circle 3 radius."),
+    ] = 8.0,
+    teardrop_r4: Annotated[
+        float,
+        typer.Option("--teardrop-r4", help="Teardrop circle 4 radius (v=1 tip; 0 = point)."),
+    ] = 0.0,
+    teardrop_t1: Annotated[
+        float,
+        typer.Option("--teardrop-t1", help="Teardrop circle 1 station along V."),
+    ] = 0.20,
+    teardrop_t2: Annotated[
+        float,
+        typer.Option("--teardrop-t2", help="Teardrop circle 2 station along V."),
+    ] = 0.45,
+    teardrop_t3: Annotated[
+        float,
+        typer.Option("--teardrop-t3", help="Teardrop circle 3 station along V."),
+    ] = 0.70,
+    bead_height: Annotated[
+        Optional[float],
+        typer.Option("--bead-height", help="Bead profile height (overrides sphere seed)."),
+    ] = None,
+    bead_r0: Annotated[
+        Optional[float],
+        typer.Option("--bead-r0", help="Bead circle 0 radius overlay (v=0 opening)."),
+    ] = None,
+    bead_r1: Annotated[
+        Optional[float],
+        typer.Option("--bead-r1", help="Bead circle 1 radius overlay."),
+    ] = None,
+    bead_r2: Annotated[
+        Optional[float],
+        typer.Option("--bead-r2", help="Bead circle 2 radius overlay (bulge)."),
+    ] = None,
+    bead_r3: Annotated[
+        Optional[float],
+        typer.Option("--bead-r3", help="Bead circle 3 radius overlay."),
+    ] = None,
+    bead_r4: Annotated[
+        Optional[float],
+        typer.Option("--bead-r4", help="Bead circle 4 radius overlay (v=1 opening)."),
+    ] = None,
+    bead_t1: Annotated[
+        Optional[float],
+        typer.Option("--bead-t1", help="Bead circle 1 station overlay."),
+    ] = None,
+    bead_t2: Annotated[
+        Optional[float],
+        typer.Option("--bead-t2", help="Bead circle 2 station overlay."),
+    ] = None,
+    bead_t3: Annotated[
+        Optional[float],
+        typer.Option("--bead-t3", help="Bead circle 3 station overlay."),
+    ] = None,
     custom_shape: Annotated[
         Optional[Path],
         typer.Option(
@@ -350,9 +495,31 @@ def generate(
             variable_cylinder_radius_end=var_cyl_radius_end,
             variable_cylinder_length=var_cyl_length,
             variable_cylinder_middle=max(0.1, min(0.9, float(var_cyl_middle))),
-            bead_diameter=bead_diameter,
-            bead_bottom_radius=bead_bottom_radius,
-            bead_top_radius=bead_top_radius,
+            **_teardrop_config_fields(
+                teardrop_height,
+                teardrop_r0,
+                teardrop_r1,
+                teardrop_r2,
+                teardrop_r3,
+                teardrop_r4,
+                teardrop_t1,
+                teardrop_t2,
+                teardrop_t3,
+            ),
+            **_bead_config_fields(
+                bead_diameter,
+                bead_bottom_radius,
+                bead_top_radius,
+                bead_height,
+                bead_r0,
+                bead_r1,
+                bead_r2,
+                bead_r3,
+                bead_r4,
+                bead_t1,
+                bead_t2,
+                bead_t3,
+            ),
             custom_shape_path="" if custom_shape is None else str(custom_shape),
             custom_shape_size=float(custom_shape_size),
             section_box_enabled=bool(section_box),
@@ -433,7 +600,7 @@ def stl(
             "--shape",
             help=(
                 "Target surface: plane|cylinder|cone|frustum|variable_cylinder|"
-                "bead|custom."
+                "teardrop|bead|custom."
             ),
         ),
     ] = "plane",
@@ -500,6 +667,78 @@ def stl(
         float,
         typer.Option("--bead-top-radius", help="Bead top slice radius."),
     ] = 12.0,
+    teardrop_height: Annotated[
+        float,
+        typer.Option("--teardrop-height", help="Teardrop height along V (shape=teardrop)."),
+    ] = 100.0,
+    teardrop_r0: Annotated[
+        float,
+        typer.Option("--teardrop-r0", help="Teardrop circle 0 radius (v=0 base)."),
+    ] = 22.0,
+    teardrop_r1: Annotated[
+        float,
+        typer.Option("--teardrop-r1", help="Teardrop circle 1 radius."),
+    ] = 20.0,
+    teardrop_r2: Annotated[
+        float,
+        typer.Option("--teardrop-r2", help="Teardrop circle 2 radius."),
+    ] = 16.0,
+    teardrop_r3: Annotated[
+        float,
+        typer.Option("--teardrop-r3", help="Teardrop circle 3 radius."),
+    ] = 8.0,
+    teardrop_r4: Annotated[
+        float,
+        typer.Option("--teardrop-r4", help="Teardrop circle 4 radius (v=1 tip; 0 = point)."),
+    ] = 0.0,
+    teardrop_t1: Annotated[
+        float,
+        typer.Option("--teardrop-t1", help="Teardrop circle 1 station along V."),
+    ] = 0.20,
+    teardrop_t2: Annotated[
+        float,
+        typer.Option("--teardrop-t2", help="Teardrop circle 2 station along V."),
+    ] = 0.45,
+    teardrop_t3: Annotated[
+        float,
+        typer.Option("--teardrop-t3", help="Teardrop circle 3 station along V."),
+    ] = 0.70,
+    bead_height: Annotated[
+        Optional[float],
+        typer.Option("--bead-height", help="Bead profile height (overrides sphere seed)."),
+    ] = None,
+    bead_r0: Annotated[
+        Optional[float],
+        typer.Option("--bead-r0", help="Bead circle 0 radius overlay (v=0 opening)."),
+    ] = None,
+    bead_r1: Annotated[
+        Optional[float],
+        typer.Option("--bead-r1", help="Bead circle 1 radius overlay."),
+    ] = None,
+    bead_r2: Annotated[
+        Optional[float],
+        typer.Option("--bead-r2", help="Bead circle 2 radius overlay (bulge)."),
+    ] = None,
+    bead_r3: Annotated[
+        Optional[float],
+        typer.Option("--bead-r3", help="Bead circle 3 radius overlay."),
+    ] = None,
+    bead_r4: Annotated[
+        Optional[float],
+        typer.Option("--bead-r4", help="Bead circle 4 radius overlay (v=1 opening)."),
+    ] = None,
+    bead_t1: Annotated[
+        Optional[float],
+        typer.Option("--bead-t1", help="Bead circle 1 station overlay."),
+    ] = None,
+    bead_t2: Annotated[
+        Optional[float],
+        typer.Option("--bead-t2", help="Bead circle 2 station overlay."),
+    ] = None,
+    bead_t3: Annotated[
+        Optional[float],
+        typer.Option("--bead-t3", help="Bead circle 3 station overlay."),
+    ] = None,
     custom_shape: Annotated[
         Optional[Path],
         typer.Option(
@@ -681,9 +920,31 @@ def stl(
             variable_cylinder_radius_end=var_cyl_radius_end,
             variable_cylinder_length=var_cyl_length,
             variable_cylinder_middle=max(0.1, min(0.9, float(var_cyl_middle))),
-            bead_diameter=bead_diameter,
-            bead_bottom_radius=bead_bottom_radius,
-            bead_top_radius=bead_top_radius,
+            **_teardrop_config_fields(
+                teardrop_height,
+                teardrop_r0,
+                teardrop_r1,
+                teardrop_r2,
+                teardrop_r3,
+                teardrop_r4,
+                teardrop_t1,
+                teardrop_t2,
+                teardrop_t3,
+            ),
+            **_bead_config_fields(
+                bead_diameter,
+                bead_bottom_radius,
+                bead_top_radius,
+                bead_height,
+                bead_r0,
+                bead_r1,
+                bead_r2,
+                bead_r3,
+                bead_r4,
+                bead_t1,
+                bead_t2,
+                bead_t3,
+            ),
             custom_shape_path="" if custom_shape is None else str(custom_shape),
             custom_shape_size=float(custom_shape_size),
             section_box_enabled=bool(section_box),

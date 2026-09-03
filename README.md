@@ -1,6 +1,6 @@
 # cymatics-geometry
 
-Plane-of-points geometry displaced by **multi-source cymatics wave interference**, optionally **mapped onto cylinder / cone / frustum / variable cylinder / bead / a custom 2D vector silhouette**, then reconnected into **parallel U/V grid lines**, clipped by an optional **section box**, and optionally **piped into 3D-printable voxel solids (STL)**.
+Plane-of-points geometry displaced by **multi-source cymatics wave interference**, optionally **mapped onto cylinder / cone / frustum / variable cylinder / teardrop / bead / a custom 2D vector silhouette**, then reconnected into **parallel U/V grid lines**, clipped by an optional **section box**, and optionally **piped into 3D-printable voxel solids (STL)**.
 
 Built in the same spirit as [`enhancement-geometry`](https://github.com/Livia-Zaharia/enhancement-geometry) (the Voronoi / lofted-cylinder library used by [Materialized Enhancements](https://github.com/Livia-Zaharia/materialized-enchancements)): typed `PipelineConfig`, staged `run_pipeline`, PyVista visualization, Typer CLI, and a Jupyter notebook for debugging.
 
@@ -16,7 +16,7 @@ Author: **Livia Zaharia**
 2. Put wave sources at the **four corners** and optional **mid-edge** points (S/E/N/W)
 3. Control per-source **amplitude**, **λ**, and **release** (0–150 world units, 1:1)
 4. Move points in **Z** by wave interference; **release** applies a radial **XY** shockwave with optional **cloth** springs
-5. **Map** the same UV lattice + local offsets onto a target shape (`plane` / `cylinder` / `cone` / `frustum` / `variable_cylinder` / `bead` / `custom`)
+5. **Map** the same UV lattice + local offsets onto a target shape (`plane` / `cylinder` / `cone` / `frustum` / `variable_cylinder` / `teardrop` / `bead` / `custom`)
 6. **Custom 2D** — load SVG / DXF / DWG, scale uniformly (aspect ratio kept), stretch the square to the bbox, **crop** anything outside the silhouette
 7. **Section box** — optional oriented cube (size / center / rotation on 3 axes) that **clips** the mapped geometry
 8. Reconnect as **parallel U-row and V-column lines** (either direction can be turned off)
@@ -124,7 +124,7 @@ Interactive Plotly viewer (right panel, top → bottom):
 
 - **Display** — saved-config **Load** · `line color` · X/Y toggles · **boundary** (closed polyline tracking the original 2D outline) · **line step** · **keep X / keep Y**
 - **Sources** — amp may be **negative** (flips wave / Z direction)
-- **Shape map** — plane / cylinder / cone / frustum / **variable cylinder** / **bead** / **custom 2D** (upload SVG/DXF/DWG; size keeps imported aspect ratio) + shape params
+- **Shape map** — plane / cylinder / cone / frustum / **variable cylinder** / **teardrop** / **bead** / **custom 2D** (upload SVG/DXF/DWG; size keeps imported aspect ratio) + shape params
 - **Section box** — enable + size XYZ / center XYZ / rotation XYZ + **Fit box**
 - **Sources** — per-source amp / λ / release (+ sync checkboxes)
 - **Mirroring** — `corners` / `mids` / `all` / `clear`: copies amp·λ·release from the first selected source (order SW→…→W). Sources **not** in the new selection reset to **0**; `clear` zeros everything
@@ -137,9 +137,13 @@ Every numeric slider has a **side number box** — click and type for precise va
 
 Three circle radii along the axis (begin / middle / end), total length, and middle station `t ∈ [0.1, 0.9]` (0 = begin, 1 = end; extremes are clamped so the middle circle never sits flush with either end). Radius is piecewise-linear between the three stations.
 
+### Teardrop
+
+Five control circles along the axis (radii `R0…R4`) plus three interior stations `t1, t2, t3` (0 = base, 1 = tip) and total **height**. Radius is piecewise-linear between neighboring circles; stations stay ordered with a 0.05 minimum gap. Default is a cone-like drop that tapers to a point (`R4 = 0`). Move the circles to make fatter, longer, or blunter drops.
+
 ### Bead
 
-A sphere of controllable **diameter**, with the top and bottom cut off by planar slices. The **bottom** and **top** slice circle radii are independent (each clamped to ≤ sphere radius). Height follows from the geometry.
+Five control circles with the same move/adjust controls as the teardrop. Defaults sample a **sliced sphere** (diameter + independent top/bottom opening radii) at five equal-v stations. Changing the sphere sliders / `--bead-diameter` / `--bead-*-radius` restamps the five circles; then you can override individual radii, stations, or height. Old configs that only store the three sphere params still load — the five-circle profile is filled from that sphere.
 
 ### Custom 2D shape
 
@@ -252,7 +256,23 @@ uv run cymatics generate \
   --screenshot exports/variable_cylinder_preview.png
 ```
 
-### Bead (sliced sphere)
+### Teardrop (five movable circles)
+
+```bash
+uv run cymatics generate \
+  --grid-x 80 --grid-y 80 \
+  --amp-sw 1.0 --amp-se 0.85 --amp-ne 0.55 --amp-nw 0.9 \
+  --wavelength 25 \
+  --shape teardrop \
+  --teardrop-height 100 \
+  --teardrop-r0 22 --teardrop-r1 20 --teardrop-r2 16 --teardrop-r3 8 --teardrop-r4 0 \
+  --teardrop-t1 0.20 --teardrop-t2 0.45 --teardrop-t3 0.70 \
+  --line-color difference \
+  --no-viewer \
+  --screenshot exports/teardrop_preview.png
+```
+
+### Bead (five circles, sphere-seeded)
 
 ```bash
 uv run cymatics generate \
@@ -266,6 +286,12 @@ uv run cymatics generate \
   --line-color difference \
   --no-viewer \
   --screenshot exports/bead_preview.png
+```
+
+Sphere flags fill the five circles. Override any of them (for example a fatter bulge):
+
+```bash
+uv run cymatics generate --shape bead --bead-diameter 40 --bead-r2 28 --bead-t2 0.55
 ```
 
 ### Custom 2D silhouette (SVG / DXF / DWG)
@@ -353,7 +379,7 @@ uv run cymatics stl -c configs/<pipeline-only>.json --voxel-size 0.5 --pipe-radi
 
 | Flag | Meaning |
 |------|---------|
-| `--shape` | `plane` \| `cylinder` \| `cone` \| `frustum` \| `variable_cylinder` \| `bead` \| `custom` |
+| `--shape` | `plane` \| `cylinder` \| `cone` \| `frustum` \| `variable_cylinder` \| `teardrop` \| `bead` \| `custom` |
 | `--custom-shape` | SVG / DXF / DWG path (required when `--shape custom`) |
 | `--custom-shape-size` | longest bbox side; imported aspect ratio is kept |
 | `--section-box` / `--no-section-box` | clip mapped geometry with an oriented cube |
@@ -365,7 +391,9 @@ uv run cymatics stl -c configs/<pipeline-only>.json --voxel-size 0.5 --pipe-radi
 | `--frustum-height` / `--frustum-base-diameter` / `--frustum-top-diameter` | frustum params |
 | `--var-cyl-r-begin` / `--var-cyl-r-middle` / `--var-cyl-r-end` | variable-cylinder circle radii |
 | `--var-cyl-length` / `--var-cyl-middle` | variable-cylinder length + middle station ∈ [0.1, 0.9] |
-| `--bead-diameter` / `--bead-bottom-radius` / `--bead-top-radius` | bead sphere + independent slice radii |
+| `--teardrop-height` / `--teardrop-r0`…`--teardrop-r4` / `--teardrop-t1`…`--teardrop-t3` | teardrop height, five radii, three interior stations |
+| `--bead-diameter` / `--bead-bottom-radius` / `--bead-top-radius` | bead sphere seed (fills the five circles) |
+| `--bead-height` / `--bead-r0`…`--bead-r4` / `--bead-t1`…`--bead-t3` | bead five-circle overlays (optional) |
 | `--line-color` | `difference` (Z coolwarm) \| `white` |
 | `--lines-x` / `--no-lines-x` | U-parallel lines |
 | `--lines-y` / `--no-lines-y` | V-parallel lines |
@@ -434,7 +462,7 @@ cymatics-geometry/
 │   ├── config.py          # PipelineConfig + save/load model params JSON
 │   ├── grid.py            # square grid + source positions
 │   ├── waves.py           # multi-source interference + release/cloth
-│   ├── shapes.py          # plane → cylinder/cone/frustum/variable_cylinder/bead/custom mapping
+│   ├── shapes.py          # plane → cylinder/cone/frustum/variable_cylinder/teardrop/bead/custom mapping
 │   ├── custom_shape.py    # SVG / DXF / DWG load + uniform scale
 │   ├── crop.py            # 2D silhouette crop + oriented section box
 │   ├── lines.py           # grid U/V parallel lines
@@ -451,7 +479,7 @@ cymatics-geometry/
 
 | | enhancement-geometry | cymatics-geometry |
 |--|--|--|
-| Base form | stacked circles → lofted half-cylinder | flat square point plane → optional cylinder/cone/frustum/variable cylinder |
+| Base form | stacked circles → lofted half-cylinder | flat square point plane → optional cylinder/cone/frustum/variable cylinder/teardrop/bead |
 | Field | Voronoi cells on lofted surface | circular waves from up to 8 sources |
 | Output | watertight printable shell (STL) | lines (OBJ/PLY) **and** voxel-piped solids (STL) |
 | Controls | radii, spacing, seed, extrusion | amps, λ, release, cloth, shape params, voxel pipe |

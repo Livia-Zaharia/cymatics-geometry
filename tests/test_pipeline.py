@@ -651,3 +651,101 @@ def test_variable_cylinder_three_radii_and_middle_clamp() -> None:
     end_r = np.linalg.norm(end[:, [0, 2]], axis=1)
     assert np.allclose(begin_r, 10.0, atol=1e-5)
     assert np.allclose(end_r, 8.0, atol=1e-5)
+
+
+def test_teardrop_five_circles_and_tip() -> None:
+    from cymatics_geometry.shapes import ShapeParams, surface_base_and_frames
+
+    params = ShapeParams(
+        kind="teardrop",
+        teardrop_height=80.0,
+        teardrop_radius_0=22.0,
+        teardrop_radius_1=20.0,
+        teardrop_radius_2=16.0,
+        teardrop_radius_3=8.0,
+        teardrop_radius_4=0.0,
+        teardrop_station_1=0.20,
+        teardrop_station_2=0.45,
+        teardrop_station_3=0.70,
+    )
+    v = np.array([0.0, 0.20, 0.45, 0.70, 1.0])
+    u = np.zeros_like(v)
+    base, _, _, _ = surface_base_and_frames(u, v, params, side_length=100.0)
+    radii = np.linalg.norm(base[:, [0, 2]], axis=1)
+    assert abs(float(radii[0]) - 22.0) < 1e-6
+    assert abs(float(radii[1]) - 20.0) < 1e-6
+    assert abs(float(radii[2]) - 16.0) < 1e-6
+    assert abs(float(radii[3]) - 8.0) < 1e-6
+    assert abs(float(radii[4]) - 0.0) < 1e-6
+    assert abs(float(base[-1, 1]) - 80.0) < 1e-6
+    assert abs(float(base[0, 1]) - 0.0) < 1e-6
+
+    result = run_pipeline(
+        PipelineConfig(
+            grid_size_x=12,
+            grid_size_y=10,
+            amplitude_sw=1.0,
+            wavelength_sw=25.0,
+            shape="teardrop",
+            teardrop_height=80.0,
+            teardrop_radius_4=0.0,
+        ),
+        verbose=False,
+    )
+    assert len(result.shape_points) == 12 * 10
+    y = result.shape_base_points[:, 1]
+    assert float(y.min()) == 0.0
+    assert abs(float(y.max()) - 80.0) < 1e-6
+    tip = result.shape_base_points[np.isclose(y, float(y.max()))]
+    tip_r = np.linalg.norm(tip[:, [0, 2]], axis=1)
+    assert np.allclose(tip_r, 0.0, atol=1e-5)
+
+
+def test_bead_five_circle_override() -> None:
+    result = run_pipeline(
+        PipelineConfig(
+            grid_size_x=12,
+            grid_size_y=11,
+            amplitude_sw=1.0,
+            wavelength_sw=25.0,
+            shape="bead",
+            bead_diameter=40.0,
+            bead_bottom_radius=12.0,
+            bead_top_radius=12.0,
+            bead_height=32.0,
+            bead_radius_0=12.0,
+            bead_radius_1=18.0,
+            bead_radius_2=30.0,
+            bead_radius_3=18.0,
+            bead_radius_4=12.0,
+            bead_station_1=0.25,
+            bead_station_2=0.50,
+            bead_station_3=0.75,
+        ),
+        verbose=False,
+    )
+    y = result.shape_base_points[:, 1]
+    begin = result.shape_base_points[np.isclose(y, 0.0)]
+    end = result.shape_base_points[np.isclose(y, float(y.max()))]
+    begin_r = np.linalg.norm(begin[:, [0, 2]], axis=1)
+    end_r = np.linalg.norm(end[:, [0, 2]], axis=1)
+    all_r = np.linalg.norm(result.shape_base_points[:, [0, 2]], axis=1)
+    assert np.allclose(begin_r, 12.0, atol=1e-4)
+    assert np.allclose(end_r, 12.0, atol=1e-4)
+    assert float(all_r.max()) > 28.0
+
+
+def test_interior_stations_clamp_ordered() -> None:
+    from cymatics_geometry.shapes import _clamp_interior_stations
+
+    t1, t2, t3 = _clamp_interior_stations(0.8, 0.1, 0.05)
+    assert t1 < t2 < t3
+    assert t1 >= 0.05
+    assert t3 <= 0.95
+    assert t2 - t1 >= 0.05 - 1e-12
+    assert t3 - t2 >= 0.05 - 1e-12
+
+    t1, t2, t3 = _clamp_interior_stations(0.5, 0.5, 0.5)
+    assert t1 < t2 < t3
+    assert t2 - t1 >= 0.05 - 1e-12
+    assert t3 - t2 >= 0.05 - 1e-12

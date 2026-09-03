@@ -91,3 +91,29 @@ def test_save_model_params_keeps_pipeline_thinning(tmp_path: Path) -> None:
     assert raw["voxel"]["line_stride"] == 5
     loaded = load_pipeline_config(path)
     assert loaded.line_stride == 3
+
+
+def test_old_bead_config_fills_five_circle_profile(tmp_path: Path) -> None:
+    from cymatics_geometry.shapes import bead_profile_from_sphere
+
+    path = tmp_path / "old_bead.json"
+    path.write_text(
+        json.dumps(
+            {
+                "shape": "bead",
+                "bead_diameter": 50.0,
+                "bead_bottom_radius": 8.0,
+                "bead_top_radius": 15.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = load_pipeline_config(path)
+    height, radii, stations = bead_profile_from_sphere(50.0, 8.0, 15.0)
+    assert abs(loaded.bead_height - height) < 1e-6
+    assert abs(loaded.bead_radius_0 - radii[0]) < 1e-6
+    assert abs(loaded.bead_radius_2 - radii[2]) < 1e-6
+    assert abs(loaded.bead_radius_4 - radii[4]) < 1e-6
+    assert abs(loaded.bead_station_1 - stations[0]) < 1e-9
+    assert abs(loaded.bead_station_2 - stations[1]) < 1e-9
+    assert abs(loaded.bead_station_3 - stations[2]) < 1e-9

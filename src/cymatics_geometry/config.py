@@ -120,7 +120,8 @@ class PipelineConfig:
 
     # Target surface the plane UV + local offsets are mapped onto.
     # Waves always compute on the flat plane; shape only remaps the result.
-    # "plane" | "cylinder" | "cone" | "frustum" | "variable_cylinder" | "bead"
+    # "plane" | "cylinder" | "cone" | "frustum" | "variable_cylinder" |
+    # "teardrop" | "bead"
     shape: str = "plane"
     cylinder_diameter: float = 40.0
     cylinder_length: float = 100.0
@@ -136,10 +137,29 @@ class PipelineConfig:
     variable_cylinder_length: float = 100.0
     # Where the middle circle sits along V; clamped to [0.1, 0.9] at map time
     variable_cylinder_middle: float = 0.5
-    # Bead: sphere diameter + independent top/bottom slice circle radii
+    # Teardrop: five circle radii + three interior stations + height
+    teardrop_height: float = 100.0
+    teardrop_radius_0: float = 22.0
+    teardrop_radius_1: float = 20.0
+    teardrop_radius_2: float = 16.0
+    teardrop_radius_3: float = 8.0
+    teardrop_radius_4: float = 0.0
+    teardrop_station_1: float = 0.20
+    teardrop_station_2: float = 0.45
+    teardrop_station_3: float = 0.70
+    # Bead: sphere seed + five-circle profile (defaults match Ø=40, openings 12/12)
     bead_diameter: float = 40.0
     bead_bottom_radius: float = 12.0
     bead_top_radius: float = 12.0
+    bead_height: float = 32.0
+    bead_radius_0: float = 12.0
+    bead_radius_1: float = 18.33030277982336
+    bead_radius_2: float = 20.0
+    bead_radius_3: float = 18.33030277982336
+    bead_radius_4: float = 12.0
+    bead_station_1: float = 0.25
+    bead_station_2: float = 0.50
+    bead_station_3: float = 0.75
 
     # Custom 2D vector silhouette (SVG / DXF / DWG). Size is the longest bbox
     # side; aspect ratio of the imported drawing is always preserved.
@@ -393,6 +413,24 @@ def load_pipeline_config(path: str | Path) -> PipelineConfig:
 
     if "boundary_curve" not in raw:
         kwargs["boundary_curve"] = bool(_LEGACY_WHEN_ABSENT["boundary_curve"])
+
+    # Old bead configs only had sphere + slice radii — fill the 5-circle profile
+    if "bead_radius_0" not in raw:
+        from cymatics_geometry.shapes import bead_profile_from_sphere
+
+        diameter = float(kwargs.get("bead_diameter", 40.0))
+        r_bot = float(kwargs.get("bead_bottom_radius", 12.0))
+        r_top = float(kwargs.get("bead_top_radius", 12.0))
+        height, radii, stations = bead_profile_from_sphere(diameter, r_bot, r_top)
+        kwargs["bead_height"] = height
+        kwargs["bead_radius_0"] = radii[0]
+        kwargs["bead_radius_1"] = radii[1]
+        kwargs["bead_radius_2"] = radii[2]
+        kwargs["bead_radius_3"] = radii[3]
+        kwargs["bead_radius_4"] = radii[4]
+        kwargs["bead_station_1"] = stations[0]
+        kwargs["bead_station_2"] = stations[1]
+        kwargs["bead_station_3"] = stations[2]
 
     return PipelineConfig(**kwargs)
 

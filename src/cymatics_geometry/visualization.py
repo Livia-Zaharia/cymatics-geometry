@@ -23,7 +23,12 @@ from cymatics_geometry.config import (
 )
 from cymatics_geometry.grid import SOURCE_LABELS, grid_shape
 from cymatics_geometry.pipeline import PipelineResult, run_pipeline
-from cymatics_geometry.shapes import ShapeParams, shape_boundary_polyline, shape_bounds
+from cymatics_geometry.shapes import (
+    ShapeParams,
+    bead_profile_from_sphere,
+    shape_boundary_polyline,
+    shape_bounds,
+)
 from cymatics_geometry.voxels import (
     VOXEL_PARAM_HELP,
     VoxelPipeConfig,
@@ -536,9 +541,27 @@ def _shape_params_from_result(result: PipelineResult) -> ShapeParams:
         variable_cylinder_radius_end=float(cfg.variable_cylinder_radius_end),
         variable_cylinder_length=float(cfg.variable_cylinder_length),
         variable_cylinder_middle=float(cfg.variable_cylinder_middle),
+        teardrop_height=float(cfg.teardrop_height),
+        teardrop_radius_0=float(cfg.teardrop_radius_0),
+        teardrop_radius_1=float(cfg.teardrop_radius_1),
+        teardrop_radius_2=float(cfg.teardrop_radius_2),
+        teardrop_radius_3=float(cfg.teardrop_radius_3),
+        teardrop_radius_4=float(cfg.teardrop_radius_4),
+        teardrop_station_1=float(cfg.teardrop_station_1),
+        teardrop_station_2=float(cfg.teardrop_station_2),
+        teardrop_station_3=float(cfg.teardrop_station_3),
         bead_diameter=float(cfg.bead_diameter),
         bead_bottom_radius=float(cfg.bead_bottom_radius),
         bead_top_radius=float(cfg.bead_top_radius),
+        bead_height=float(cfg.bead_height),
+        bead_radius_0=float(cfg.bead_radius_0),
+        bead_radius_1=float(cfg.bead_radius_1),
+        bead_radius_2=float(cfg.bead_radius_2),
+        bead_radius_3=float(cfg.bead_radius_3),
+        bead_radius_4=float(cfg.bead_radius_4),
+        bead_station_1=float(cfg.bead_station_1),
+        bead_station_2=float(cfg.bead_station_2),
+        bead_station_3=float(cfg.bead_station_3),
         custom_bbox_xmin=float(getattr(cfg, "custom_shape_size", 100.0) and 0.0),
         custom_bbox_ymin=0.0,
         custom_bbox_xmax=float(getattr(cfg, "custom_shape_size", 100.0)),
@@ -1272,7 +1295,8 @@ def show_interactive_line_viewer(
             ("cone", "cone"),
             ("frustum (truncated cone)", "frustum"),
             ("variable cylinder (3 radii)", "variable_cylinder"),
-            ("bead (sliced sphere)", "bead"),
+            ("teardrop (5 radii)", "teardrop"),
+            ("bead (5 radii)", "bead"),
             ("custom (2D SVG/DXF/DWG)", "custom"),
         ],
         value=str(getattr(base, "shape", "plane") or "plane"),
@@ -1433,6 +1457,194 @@ def show_interactive_line_viewer(
         style=global_style,
         layout=full_slider,
         tooltip="Top slice circle radius (clamped to ≤ sphere radius)",
+    )
+    td_h = FloatSlider(
+        value=float(base.teardrop_height),
+        min=10.0,
+        max=200.0,
+        step=1.0,
+        description="drop H",
+        readout_format=".0f",
+        style=global_style,
+        layout=full_slider,
+        tooltip="Teardrop height along V",
+    )
+    td_r0 = FloatSlider(
+        value=float(base.teardrop_radius_0),
+        min=0.0,
+        max=80.0,
+        step=0.5,
+        description="drop R0",
+        readout_format=".1f",
+        style=global_style,
+        layout=full_slider,
+        tooltip="Circle 0 radius (v=0 base)",
+    )
+    td_r1 = FloatSlider(
+        value=float(base.teardrop_radius_1),
+        min=0.0,
+        max=80.0,
+        step=0.5,
+        description="drop R1",
+        readout_format=".1f",
+        style=global_style,
+        layout=full_slider,
+    )
+    td_r2 = FloatSlider(
+        value=float(base.teardrop_radius_2),
+        min=0.0,
+        max=80.0,
+        step=0.5,
+        description="drop R2",
+        readout_format=".1f",
+        style=global_style,
+        layout=full_slider,
+    )
+    td_r3 = FloatSlider(
+        value=float(base.teardrop_radius_3),
+        min=0.0,
+        max=80.0,
+        step=0.5,
+        description="drop R3",
+        readout_format=".1f",
+        style=global_style,
+        layout=full_slider,
+    )
+    td_r4 = FloatSlider(
+        value=float(base.teardrop_radius_4),
+        min=0.0,
+        max=80.0,
+        step=0.5,
+        description="drop R4",
+        readout_format=".1f",
+        style=global_style,
+        layout=full_slider,
+        tooltip="Circle 4 radius (v=1 tip; 0 = point)",
+    )
+    td_t1 = FloatSlider(
+        value=float(np.clip(base.teardrop_station_1, 0.05, 0.85)),
+        min=0.05,
+        max=0.85,
+        step=0.01,
+        description="drop t1",
+        readout_format=".2f",
+        style=global_style,
+        layout=full_slider,
+        tooltip="Where circle 1 sits along height (0=base, 1=tip)",
+    )
+    td_t2 = FloatSlider(
+        value=float(np.clip(base.teardrop_station_2, 0.10, 0.90)),
+        min=0.10,
+        max=0.90,
+        step=0.01,
+        description="drop t2",
+        readout_format=".2f",
+        style=global_style,
+        layout=full_slider,
+    )
+    td_t3 = FloatSlider(
+        value=float(np.clip(base.teardrop_station_3, 0.15, 0.95)),
+        min=0.15,
+        max=0.95,
+        step=0.01,
+        description="drop t3",
+        readout_format=".2f",
+        style=global_style,
+        layout=full_slider,
+    )
+    bd_h = FloatSlider(
+        value=float(base.bead_height),
+        min=5.0,
+        max=200.0,
+        step=1.0,
+        description="bead H",
+        readout_format=".0f",
+        style=global_style,
+        layout=full_slider,
+        tooltip="Bead profile height (Y span)",
+    )
+    bd_r0 = FloatSlider(
+        value=float(base.bead_radius_0),
+        min=0.0,
+        max=80.0,
+        step=0.5,
+        description="bead R0",
+        readout_format=".1f",
+        style=global_style,
+        layout=full_slider,
+        tooltip="Circle 0 radius (bottom opening)",
+    )
+    bd_r1 = FloatSlider(
+        value=float(base.bead_radius_1),
+        min=0.0,
+        max=80.0,
+        step=0.5,
+        description="bead R1",
+        readout_format=".1f",
+        style=global_style,
+        layout=full_slider,
+    )
+    bd_r2 = FloatSlider(
+        value=float(base.bead_radius_2),
+        min=0.0,
+        max=80.0,
+        step=0.5,
+        description="bead R2",
+        readout_format=".1f",
+        style=global_style,
+        layout=full_slider,
+        tooltip="Circle 2 radius (equator / bulge)",
+    )
+    bd_r3 = FloatSlider(
+        value=float(base.bead_radius_3),
+        min=0.0,
+        max=80.0,
+        step=0.5,
+        description="bead R3",
+        readout_format=".1f",
+        style=global_style,
+        layout=full_slider,
+    )
+    bd_r4 = FloatSlider(
+        value=float(base.bead_radius_4),
+        min=0.0,
+        max=80.0,
+        step=0.5,
+        description="bead R4",
+        readout_format=".1f",
+        style=global_style,
+        layout=full_slider,
+        tooltip="Circle 4 radius (top opening)",
+    )
+    bd_t1 = FloatSlider(
+        value=float(np.clip(base.bead_station_1, 0.05, 0.85)),
+        min=0.05,
+        max=0.85,
+        step=0.01,
+        description="bead t1",
+        readout_format=".2f",
+        style=global_style,
+        layout=full_slider,
+    )
+    bd_t2 = FloatSlider(
+        value=float(np.clip(base.bead_station_2, 0.10, 0.90)),
+        min=0.10,
+        max=0.90,
+        step=0.01,
+        description="bead t2",
+        readout_format=".2f",
+        style=global_style,
+        layout=full_slider,
+    )
+    bd_t3 = FloatSlider(
+        value=float(np.clip(base.bead_station_3, 0.15, 0.95)),
+        min=0.15,
+        max=0.95,
+        step=0.01,
+        description="bead t3",
+        readout_format=".2f",
+        style=global_style,
+        layout=full_slider,
     )
     custom_path_txt = Text(
         value=str(getattr(base, "custom_shape_path", "") or ""),
@@ -1695,10 +1907,30 @@ def show_interactive_line_viewer(
         _slider_with_number(vc_len),
         _slider_with_number(vc_mid),
     )
+    teardrop_param_rows = (
+        _slider_with_number(td_h),
+        _slider_with_number(td_r0),
+        _slider_with_number(td_r1),
+        _slider_with_number(td_r2),
+        _slider_with_number(td_r3),
+        _slider_with_number(td_r4),
+        _slider_with_number(td_t1),
+        _slider_with_number(td_t2),
+        _slider_with_number(td_t3),
+    )
     bead_param_rows = (
         _slider_with_number(bead_diam),
         _slider_with_number(bead_r_bot),
         _slider_with_number(bead_r_top),
+        _slider_with_number(bd_h),
+        _slider_with_number(bd_r0),
+        _slider_with_number(bd_r1),
+        _slider_with_number(bd_r2),
+        _slider_with_number(bd_r3),
+        _slider_with_number(bd_r4),
+        _slider_with_number(bd_t1),
+        _slider_with_number(bd_t2),
+        _slider_with_number(bd_t3),
     )
     custom_param_rows = (
         custom_upload,
@@ -1717,6 +1949,8 @@ def show_interactive_line_viewer(
             shape_param_box.children = frust_param_rows
         elif kind == "variable_cylinder":
             shape_param_box.children = var_cyl_param_rows
+        elif kind == "teardrop":
+            shape_param_box.children = teardrop_param_rows
         elif kind == "bead":
             shape_param_box.children = bead_param_rows
         elif kind == "custom":
@@ -1727,6 +1961,29 @@ def show_interactive_line_viewer(
     _sync_shape_param_visibility()
 
     _loading = {"on": False}
+    _stamping = {"on": False}
+
+    def _stamp_bead_from_sphere(_change: object | None = None) -> None:
+        """Sphere sliders restamp the five-circle profile; then you can tweak."""
+        if _loading["on"] or _stamping["on"]:
+            return
+        _stamping["on"] = True
+        height, radii, stations = bead_profile_from_sphere(
+            float(bead_diam.value),
+            float(bead_r_bot.value),
+            float(bead_r_top.value),
+        )
+        bd_h.value = float(height)
+        bd_r0.value = float(radii[0])
+        bd_r1.value = float(radii[1])
+        bd_r2.value = float(radii[2])
+        bd_r3.value = float(radii[3])
+        bd_r4.value = float(radii[4])
+        bd_t1.value = float(stations[0])
+        bd_t2.value = float(stations[1])
+        bd_t3.value = float(stations[2])
+        _stamping["on"] = False
+        _rerun()
 
     def _linked_keys() -> list[str]:
         # Preserve SOURCE_LABELS order so "first" is well-defined
@@ -1787,9 +2044,27 @@ def show_interactive_line_viewer(
             "variable_cylinder_radius_end": float(vc_r2.value),
             "variable_cylinder_length": float(vc_len.value),
             "variable_cylinder_middle": float(np.clip(vc_mid.value, 0.1, 0.9)),
+            "teardrop_height": float(td_h.value),
+            "teardrop_radius_0": float(td_r0.value),
+            "teardrop_radius_1": float(td_r1.value),
+            "teardrop_radius_2": float(td_r2.value),
+            "teardrop_radius_3": float(td_r3.value),
+            "teardrop_radius_4": float(td_r4.value),
+            "teardrop_station_1": float(td_t1.value),
+            "teardrop_station_2": float(td_t2.value),
+            "teardrop_station_3": float(td_t3.value),
             "bead_diameter": float(bead_diam.value),
             "bead_bottom_radius": float(bead_r_bot.value),
             "bead_top_radius": float(bead_r_top.value),
+            "bead_height": float(bd_h.value),
+            "bead_radius_0": float(bd_r0.value),
+            "bead_radius_1": float(bd_r1.value),
+            "bead_radius_2": float(bd_r2.value),
+            "bead_radius_3": float(bd_r3.value),
+            "bead_radius_4": float(bd_r4.value),
+            "bead_station_1": float(bd_t1.value),
+            "bead_station_2": float(bd_t2.value),
+            "bead_station_3": float(bd_t3.value),
             "custom_shape_path": str(custom_path_txt.value).strip(),
             "custom_shape_size": float(custom_size_sl.value),
             "section_box_enabled": bool(section_box_cb.value),
@@ -1943,7 +2218,7 @@ def show_interactive_line_viewer(
     _last_live: dict[str, PipelineResult] = {"result": initial}
 
     def _rerun(_change: object | None = None) -> None:
-        if _loading["on"]:
+        if _loading["on"] or _stamping["on"]:
             return
         try:
             live = run_pipeline(_config_from_state(), verbose=False)
@@ -2249,9 +2524,27 @@ def show_interactive_line_viewer(
         vc_r2.value = float(cfg.variable_cylinder_radius_end)
         vc_len.value = float(cfg.variable_cylinder_length)
         vc_mid.value = float(np.clip(cfg.variable_cylinder_middle, 0.1, 0.9))
+        td_h.value = float(cfg.teardrop_height)
+        td_r0.value = float(cfg.teardrop_radius_0)
+        td_r1.value = float(cfg.teardrop_radius_1)
+        td_r2.value = float(cfg.teardrop_radius_2)
+        td_r3.value = float(cfg.teardrop_radius_3)
+        td_r4.value = float(cfg.teardrop_radius_4)
+        td_t1.value = float(np.clip(cfg.teardrop_station_1, td_t1.min, td_t1.max))
+        td_t2.value = float(np.clip(cfg.teardrop_station_2, td_t2.min, td_t2.max))
+        td_t3.value = float(np.clip(cfg.teardrop_station_3, td_t3.min, td_t3.max))
         bead_diam.value = float(cfg.bead_diameter)
         bead_r_bot.value = float(cfg.bead_bottom_radius)
         bead_r_top.value = float(cfg.bead_top_radius)
+        bd_h.value = float(cfg.bead_height)
+        bd_r0.value = float(cfg.bead_radius_0)
+        bd_r1.value = float(cfg.bead_radius_1)
+        bd_r2.value = float(cfg.bead_radius_2)
+        bd_r3.value = float(cfg.bead_radius_3)
+        bd_r4.value = float(cfg.bead_radius_4)
+        bd_t1.value = float(np.clip(cfg.bead_station_1, bd_t1.min, bd_t1.max))
+        bd_t2.value = float(np.clip(cfg.bead_station_2, bd_t2.min, bd_t2.max))
+        bd_t3.value = float(np.clip(cfg.bead_station_3, bd_t3.min, bd_t3.max))
         custom_path_txt.value = str(getattr(cfg, "custom_shape_path", "") or "")
         custom_size_sl.value = float(
             np.clip(
@@ -2413,9 +2706,24 @@ def show_interactive_line_viewer(
         vc_r2,
         vc_len,
         vc_mid,
-        bead_diam,
-        bead_r_bot,
-        bead_r_top,
+        td_h,
+        td_r0,
+        td_r1,
+        td_r2,
+        td_r3,
+        td_r4,
+        td_t1,
+        td_t2,
+        td_t3,
+        bd_h,
+        bd_r0,
+        bd_r1,
+        bd_r2,
+        bd_r3,
+        bd_r4,
+        bd_t1,
+        bd_t2,
+        bd_t3,
         custom_path_txt,
         custom_size_sl,
         section_box_cb,
@@ -2431,6 +2739,8 @@ def show_interactive_line_viewer(
     ):
         w.observe(_rerun, names="value")
     shape_dd.observe(_sync_shape_param_visibility, names="value")
+    for w in (bead_diam, bead_r_bot, bead_r_top):
+        w.observe(_stamp_bead_from_sphere, names="value")
 
     source_blocks = [source_widgets[label.lower()]["block"] for label in SOURCE_LABELS]
     controls = VBox(
